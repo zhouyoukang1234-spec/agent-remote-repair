@@ -10,13 +10,13 @@
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/zhouyoukang/agent-remote-repair/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/zhouyoukang1234-spec/agent-remote-repair/main/install.ps1 | iex
 ```
 
 ### Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zhouyoukang/agent-remote-repair/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/zhouyoukang1234-spec/agent-remote-repair/main/install.sh | bash
 ```
 
 **就这样。** 脚本自动完成：
@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/zhouyoukang/agent-remote-repair/mai
 ## 已有 Node.js？更快
 
 ```bash
-git clone https://github.com/zhouyoukang/agent-remote-repair.git
+git clone https://github.com/zhouyoukang1234-spec/agent-remote-repair.git
 cd agent-remote-repair
 npm install && npm start
 ```

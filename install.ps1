@@ -3,7 +3,7 @@
 # ║  道法自然 · 万法归宗 · 无为无不为                            ║
 # ║                                                              ║
 # ║  Windows: irm https://raw.githubusercontent.com/             ║
-# ║    zhouyoukang/agent-remote-repair/main/install.ps1 | iex   ║
+# ║    zhouyoukang1234-spec/agent-remote-repair/main/install.ps1 | iex   ║
 # ║                                                              ║
 # ║  自动: Node.js检测/安装 → 项目下载 → 依赖安装 → 启动        ║
 # ║  零成本: 无需Git · 无需域名 · 无需注册 · 无需配置            ║
@@ -12,7 +12,7 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # 加速Invoke-WebRequest
 
-$REPO_ZIP = "https://github.com/zhouyoukang/agent-remote-repair/archive/refs/heads/main.zip"
+$REPO_ZIP = "https://github.com/zhouyoukang1234-spec/agent-remote-repair/archive/refs/heads/main.zip"
 $REPO_ZIP_MIRRORS = @(
     $REPO_ZIP,
     "https://ghfast.top/$REPO_ZIP",

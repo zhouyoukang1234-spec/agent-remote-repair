@@ -4,7 +4,7 @@
 # ║  道法自然 · 万法归宗 · 无为无不为                            ║
 # ║                                                              ║
 # ║  curl -fsSL https://raw.githubusercontent.com/               ║
-# ║    zhouyoukang/agent-remote-repair/main/install.sh | bash    ║
+# ║    zhouyoukang1234-spec/agent-remote-repair/main/install.sh | bash    ║
 # ║                                                              ║
 # ║  自动: Node.js检测 → 项目下载 → 依赖安装 → 启动             ║
 # ║  零成本: 无需Git · 无需域名 · 无需注册 · 无需配置            ║
@@ -12,7 +12,7 @@
 
 set -e
 
-REPO_ZIP="https://github.com/zhouyoukang/agent-remote-repair/archive/refs/heads/main.zip"
+REPO_ZIP="https://github.com/zhouyoukang1234-spec/agent-remote-repair/archive/refs/heads/main.zip"
 INSTALL_DIR="$HOME/dao-remote"
 NODE_MIN=18
 
