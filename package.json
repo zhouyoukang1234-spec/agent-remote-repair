@@ -1,7 +1,7 @@
 {
   "name": "agent-remote-repair",
   "displayName": "DAO 远程中枢 · 三明治穿透",
-  "version": "9.0.0",
+  "version": "9.0.1",
   "description": "道 · 远程中枢 — 三明治架构: 操控端(云/本地 Agent) → 中枢(本插件+出站隧道) → 被控端(一行 PowerShell)。大道至简·零配置·零费用",
   "publisher": "dao",
   "engines": {
@@ -21,7 +21,8 @@
     }
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:daoRemote.statusView"
   ],
   "main": "./extension.js",
   "bin": {
@@ -36,6 +37,24 @@
     "url": "https://github.com/zhouyoukang1234-spec/agent-remote-repair/issues"
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "daoRemote",
+          "title": "DAO 远程中枢",
+          "icon": "media/dao.svg"
+        }
+      ]
+    },
+    "views": {
+      "daoRemote": [
+        {
+          "id": "daoRemote.statusView",
+          "name": "中枢状态台",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "daoRemote.showPanel",

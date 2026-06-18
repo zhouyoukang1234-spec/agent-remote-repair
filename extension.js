@@ -47,7 +47,8 @@ let statusItem = null;
 let output = null;
 let statusTimer = null;
 let started = false;
-let panel = null;
+let panel = null;          // 编辑器内大面板 (WebviewPanel)
+let viewWebview = null;    // 活动栏侧边视图 (WebviewView)，装好即可见
 let lastDocKey = "";
 
 const CLOUD_DOC = path.join(os.homedir(), "DAO_CLOUD_AGENT.md");
@@ -151,11 +152,7 @@ function stopHub() {
   lastDocKey = "";
   log("中枢已停止");
   refreshStatus();
-  if (panel) {
-    try {
-      panel.webview.postMessage(deviceState());
-    } catch {}
-  }
+  postAll();
 }
 
 // 当前中枢 + 在线设备快照，推给 Webview 实时渲染
@@ -172,6 +169,17 @@ function deviceState() {
     bootstrap: "irm " + publicOrLocal() + "/api/bootstrap.ps1 | iex",
     agents: running ? hub.agentList() : [],
   };
+}
+
+// 把当前状态推给所有已打开的 Webview（编辑器面板 + 侧栏视图）
+function postAll() {
+  const s = deviceState();
+  for (const w of [panel && panel.webview, viewWebview]) {
+    if (!w) continue;
+    try {
+      w.postMessage(s);
+    } catch {}
+  }
 }
 
 // 云端文档随设备接入/隧道就绪实时刷新（去重：仅在变化时落盘）
@@ -197,11 +205,7 @@ function tick() {
     lastDocKey = key;
     writeCloudDoc();
   }
-  if (panel) {
-    try {
-      panel.webview.postMessage(deviceState());
-    } catch {}
-  }
+  postAll();
 }
 
 function panelHtml(nonce) {
@@ -232,6 +236,7 @@ function panelHtml(nonce) {
   <div class="grid" id="status"></div>
   <div class="cmd"><code id="boot">…</code><button id="copyBoot" title="复制被控端一行接入指令">复制接入指令</button></div>
   <div class="actions">
+    <button id="restart">重启中枢</button>
     <button id="copyToken">复制 Token</button>
     <button id="copyDoc">复制云端文档</button>
     <button id="openDoc">打开云端文档</button>
@@ -264,6 +269,7 @@ function panelHtml(nonce) {
     }
     window.addEventListener('message', e => render(e.data));
     document.getElementById('copyBoot').onclick = () => vscode.postMessage({type:'copyBootstrap'});
+    document.getElementById('restart').onclick = () => vscode.postMessage({type:'restart'});
     document.getElementById('copyToken').onclick = () => vscode.postMessage({type:'copyToken'});
     document.getElementById('copyDoc').onclick = () => vscode.postMessage({type:'copyDoc'});
     document.getElementById('openDoc').onclick = () => vscode.postMessage({type:'openDoc'});
@@ -272,19 +278,16 @@ function panelHtml(nonce) {
 </body></html>`;
 }
 
-function showPanel(context) {
-  if (panel) {
-    panel.reveal(vscode.ViewColumn.Active);
-    return;
-  }
-  panel = vscode.window.createWebviewPanel("daoRemotePanel", "☰ DAO 中枢状态台", vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
-  const nonce = crypto.randomBytes(16).toString("hex");
-  panel.webview.html = panelHtml(nonce);
-  panel.onDidDispose(() => { panel = null; }, null, context.subscriptions);
-  panel.webview.onDidReceiveMessage(async (m) => {
+function newNonce() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+// 面板与侧栏视图共用的消息处理（与具体 Webview 无关）
+function handleWebviewMessage(context) {
+  return async (m) => {
     if (!m || !m.type) return;
     if (m.type === "ready") {
-      panel.webview.postMessage(deviceState());
+      postAll();
     } else if (m.type === "copyBootstrap") {
       await vscode.env.clipboard.writeText(deviceState().bootstrap);
       vscode.window.showInformationMessage("已复制被控端一行接入指令");
@@ -300,8 +303,42 @@ function showPanel(context) {
       const content = hub ? buildCloudDoc(hub) : infoMarkdown();
       const doc = await vscode.workspace.openTextDocument({ content, language: "markdown" });
       await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+    } else if (m.type === "restart") {
+      vscode.window.showInformationMessage("DAO 中枢重启中…");
+      stopHub();
+      try {
+        await startHub();
+      } catch (e) {
+        vscode.window.showErrorMessage("DAO 中枢启动失败: " + (e && e.message ? e.message : e));
+      }
     }
-  }, null, context.subscriptions);
+  };
+}
+
+// 活动栏侧边栏内的常驻视图 —— 装好插件点 DAO 图标即见的「前端」
+class StatusViewProvider {
+  constructor(context) {
+    this.context = context;
+  }
+  resolveWebviewView(webviewView) {
+    viewWebview = webviewView.webview;
+    viewWebview.options = { enableScripts: true };
+    viewWebview.html = panelHtml(newNonce());
+    viewWebview.onDidReceiveMessage(handleWebviewMessage(this.context), null, this.context.subscriptions);
+    webviewView.onDidDispose(() => { viewWebview = null; }, null, this.context.subscriptions);
+    postAll();
+  }
+}
+
+function showPanel(context) {
+  if (panel) {
+    panel.reveal(vscode.ViewColumn.Active);
+    return;
+  }
+  panel = vscode.window.createWebviewPanel("daoRemotePanel", "☰ DAO 中枢状态台", vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: true });
+  panel.webview.html = panelHtml(newNonce());
+  panel.onDidDispose(() => { panel = null; }, null, context.subscriptions);
+  panel.webview.onDidReceiveMessage(handleWebviewMessage(context), null, context.subscriptions);
 }
 
 function infoMarkdown() {
@@ -328,6 +365,7 @@ async function activate(context) {
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusItem.command = "daoRemote.showPanel";
   context.subscriptions.push(output, statusItem);
+  refreshStatus();
   log("DAO Remote 扩展激活 v" + pkg.version);
 
   register(context, "daoRemote.start", () => startHub());
@@ -362,7 +400,19 @@ async function activate(context) {
     await vscode.window.showQuickPick(items, { placeHolder: "已接入的被控端（共 " + items.length + "）" });
   });
 
-  await startHub();
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("daoRemote.statusView", new StatusViewProvider(context), {
+      webviewOptions: { retainContextWhenHidden: true },
+    })
+  );
+
+  // 启动中枢不阻塞激活：即便失败/卡住，状态栏与侧栏前端仍可见
+  startHub().catch((e) => {
+    log("startHub 失败: " + (e && e.message ? e.message : e));
+    vscode.window.showErrorMessage("DAO 中枢启动失败（可点状态栏或侧栏「重启中枢」重试）: " + (e && e.message ? e.message : e));
+    refreshStatus();
+    postAll();
+  });
 }
 
 function deactivate() {
