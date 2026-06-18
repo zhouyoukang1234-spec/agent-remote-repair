@@ -2,6 +2,19 @@
 
 本项目遵循语义化版本。日期格式 YYYY-MM-DD。
 
+## [9.3.0] - 2026-06-18
+
+从根本底层规避一切插件并存冲突。此前合并自本源 dao-bridge 时，沿用了与遗留 `dao.dao-bridge` 插件**完全相同**的贡献标识（活动栏容器 `daoBridge` / 视图 `daoBridgeView` / 命令 `daoBridge.*`）。一旦两插件同时安装，二者抢注同一 `registerWebviewViewProvider("daoBridgeView")` 与同名命令，后注册者抛错中断激活 → webview 的 `onDidReceiveMessage` 没挂上 → 面板按钮点不动、输入框打不了字（"没法写字"）。
+
+### 修复（彻底规避冲突）
+- **唯一命名空间**：全部贡献标识迁至 `daoBridgeHub.*`（活动栏容器 `daoBridgeHub` / 视图 `daoBridgeHubView` / 命令 `daoBridgeHub.*` / 配置 `daoBridgeHub.*`），与遗留 `daoBridge`、`daoRemote` 永不重名——两插件并存也不再抢注同一 id。
+- **配置回退**：`daoCfg()` 优先读新命名空间用户设置，否则回退历史 `daoBridge` / `daoRemote` 的显式设置，最后用新默认值——升级不丢用户既有配置。
+- **防御式注册**：`activate` 内每项 `registerCommand`/`registerWebviewViewProvider` 都经 `safeReg` 包裹，任何残留同名插件/重复激活都不再 brick 掉 webview，消息处理器必然挂上、输入框永远可用。
+- **遗留插件探测**：激活时扫描其它贡献 `daoBridge.*`/`daoRemote.*` 命令或同名视图的插件，弹窗提示并支持一键 `卸载遗留插件` + 重载窗口，从源头消除并存。
+- **Webview 加固**：注入 CSP（`script-src 'nonce-…'`，脚本严格走 nonce 防 XSS）+ 事件委托（移除全部内联 `onclick`，改 `data-op`），确保任意编辑器/锁定环境下输入框与按钮都可用。
+
+测试：`npm test` 48/48（20 core + 28 ext）；VS Code 1.125 扩展宿主实测面板可正常打字、与遗留插件并存无冲突。
+
 ## [9.2.0] - 2026-06-18
 
 回归本源 · 在本源 dao-bridge 插件上演化，而非另起炉灶。以

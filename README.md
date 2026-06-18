@@ -27,9 +27,11 @@
 npx @vscode/vsce package          # 产出 .vsix
 ```
 
-在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），状态栏显示 `本地:<port> · N 被控端`，命令面板搜 `DAO` 见 8 个命令。被控端短名映射用设置 `daoRemote.aliases`（软编码，无写死值）。
+在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），左侧活动栏出现 **DAO Bridge** 图标，命令面板搜 `DAO Bridge` 见 6 个命令（`daoBridgeHub.*`）。
 
-点状态栏（或命令 `DAO 远程中枢: 打开中枢状态台`）打开 **「DAO 中枢状态台」**：一窗汇总本机/中枢状态 + **通过 PowerShell 接入的在线设备列表**（每 3s 实时刷新）+ **一行接入指令的复制按钮**（URL 随隧道就绪实时刷新）。每当有设备接入/掉线，`~/DAO_CLOUD_AGENT.md` 云端文档**自动重写**——内含所有在线设备（含中枢）与操控逻辑，复制给云端/本地 Agent 即可让其知悉全部在线设备并直接操控。
+> 命名空间统一为 `daoBridgeHub.*`（视图/命令/配置），与遗留 `dao-bridge` / `daoRemote` 插件标识不再重名，从根本上规避两插件并存时抢注同名命令/视图导致面板无法输入的冲突；激活时若探测到遗留同类插件会提示一键卸载。旧的 `daoBridge.*` / `daoRemote.*` 用户设置仍会自动回退读取，升级不丢配置。
+
+点活动栏 **DAO Bridge** 图标打开 **「公网穿透」** 面板：一窗汇总本机/中枢状态 + **通过 PowerShell 接入的在线设备列表**（每 3s 实时刷新）+ **一行接入指令的复制按钮**（URL 随隧道就绪实时刷新）。每当有设备接入/掉线，`~/DAO_CLOUD_AGENT.md` 云端文档**自动重写**——内含所有在线设备（含中枢）与操控逻辑，复制给云端/本地 Agent 即可让其知悉全部在线设备并直接操控。
 
 ## 一行启动（CLI 孪生，可选）
 
@@ -107,7 +109,7 @@ print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"whoami"}))   # 中枢本
 | `--lan-only` / `DAO_LAN_ONLY=1` | 仅局域网 |
 | `DAO_TOKEN` | 指定 master token（默认随机并持久化到 `~/.dao-remote/conn.json`）|
 | `DAO_RELAY_URL` | 走 Worker+DurableObject 稳定隧道（`*.workers.dev`），否则默认 cloudflared 透明隧道 |
-| `DAO_ALIASES` | 被控端短名映射（软编码，无写死值），如 `{"laptop":"MY-PC"}`；插件内亦可用设置 `daoRemote.aliases` |
+| `DAO_ALIASES` | 被控端短名映射（软编码，无写死值），如 `{"laptop":"MY-PC"}` |
 
 ## 架构与源码
 

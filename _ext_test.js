@@ -33,9 +33,9 @@ const vscodeMock = {
     createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
     createStatusBarItem: () => ({ text: "", tooltip: "", command: "", show() {}, hide() {}, dispose() {} }),
     setStatusBarMessage: () => ({ dispose() {} }),
-    showInformationMessage: (m) => { infoMsgs.push(m); },
-    showWarningMessage: (m) => { infoMsgs.push(m); },
-    showErrorMessage: (m) => { infoMsgs.push(m); },
+    showInformationMessage: (m) => { infoMsgs.push(m); return Promise.resolve(undefined); },
+    showWarningMessage: (m) => { infoMsgs.push(m); return Promise.resolve(undefined); },
+    showErrorMessage: (m) => { infoMsgs.push(m); return Promise.resolve(undefined); },
     showTextDocument: async () => ({}),
     registerWebviewViewProvider: (id, provider) => { lastViewProvider = { id, provider }; return { dispose() {} }; },
   },
@@ -51,7 +51,8 @@ const vscodeMock = {
     openExternal: async () => true,
   },
   version: "1.124.0",
-  commands: { registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; } },
+  commands: { registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; }, executeCommand: async () => {} },
+  extensions: { all: [], getExtension: () => undefined },
 };
 
 // 注入 mock：劫持 require('vscode')
@@ -168,12 +169,30 @@ function api(base, method, p, body, token) {
   Bridge.prototype.start = async function () { return ""; };
   const subs = [];
   ext.activate({ subscriptions: subs });
-  const want = ["daoBridge.restart", "daoBridge.copyBootstrap", "daoBridge.logout", "daoBridge.openMd", "daoBridge.exportCloudMd", "daoBridge.exportLocalMd"];
-  ok("activate 注册本源6命令 + copyBootstrap", want.every((c) => typeof commands[c] === "function"));
-  ok("activate 注册侧栏 daoBridgeView", !!lastViewProvider && lastViewProvider.id === "daoBridgeView");
-  await commands["daoBridge.copyBootstrap"]();
+  const want = ["daoBridgeHub.restart", "daoBridgeHub.copyBootstrap", "daoBridgeHub.logout", "daoBridgeHub.openMd", "daoBridgeHub.exportCloudMd", "daoBridgeHub.exportLocalMd"];
+  ok("activate 注册本源6命令(daoBridgeHub 唯一命名空间)", want.every((c) => typeof commands[c] === "function"));
+  ok("命令不再用遗留 daoBridge.* 命名空间", typeof commands["daoBridge.restart"] === "undefined");
+  ok("activate 注册侧栏 daoBridgeHubView(唯一视图 id)", !!lastViewProvider && lastViewProvider.id === "daoBridgeHubView");
+  await commands["daoBridgeHub.copyBootstrap"]();
   ok("copyBootstrap 复制一行接入指令", /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v));
   ext.deactivate();
+
+  // ── 冲突规避：webview 强化(CSP/nonce/无内联 onclick) + 遗留插件探测不崩 ──
+  ok("html 含 CSP + script nonce", /Content-Security-Policy/.test(html) && /script-src 'nonce-/.test(html));
+  ok("html 无内联 onclick(CSP 安全)", !/onclick=/.test(html));
+  ok("html 按钮改用 data-op 委托", /data-op="copyBootstrap"/.test(html) && /data-op="exec"/.test(html));
+  // 模拟同时装有遗留 dao.dao-bridge(同名命令/视图) —— activate 不得崩, 且给出冲突告警
+  infoMsgs.length = 0;
+  vscodeMock.extensions.all = [
+    { id: "dao.dao-bridge", packageJSON: { displayName: "DAO Bridge·旧", contributes: { commands: [{ command: "daoBridge.restart" }], views: { daoBridge: [{ id: "daoBridgeView" }] } } } },
+  ];
+  const subs2 = [];
+  let crashed = false;
+  try { ext.activate({ subscriptions: subs2, extension: { id: "dao.agent-remote-repair" } }); } catch (e) { crashed = true; }
+  ok("存在遗留同名插件时 activate 不崩", !crashed && typeof commands["daoBridgeHub.restart"] === "function");
+  ok("探测到遗留插件并告警卸载", infoMsgs.some((m) => /遗留插件/.test(String(m))));
+  ext.deactivate();
+  vscodeMock.extensions.all = [];
 
   console.log(`\n${pass} passed, ${fail} failed`);
   Module._load = origLoad;
