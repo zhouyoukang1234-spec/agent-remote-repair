@@ -1,9 +1,0 @@
-node_modules/
-.env
-frpc_cn.toml
-frpc_*.toml
-push.js
-push_fix.js
-push_done.js
-fix_hosts.js
-*.log

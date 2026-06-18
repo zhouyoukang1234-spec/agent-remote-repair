@@ -1,19 +1,28 @@
 {
   "name": "agent-remote-repair",
-  "version": "8.7.0",
-  "description": "道 · 远程诊断修复中枢 — Ed25519端到端·道核驱动·唯变所适·万法归宗",
-  "main": "dao.js",
+  "version": "9.0.0",
+  "description": "道 · 远程中枢 — 三明治架构: 操控端(云/本地 Agent) → 中枢(本插件+出站隧道) → 被控端(一行 PowerShell)。大道至简·零配置·零费用",
+  "main": "core.js",
+  "bin": {
+    "dao": "dao.js"
+  },
   "scripts": {
     "start": "node dao.js",
+    "start:lan": "node dao.js --lan-only",
     "start:no-tunnel": "node dao.js --no-tunnel",
-    "hub": "node remote-agent/server.js",
-    "relay": "python ps-agent/ps_agent_server.py",
-    "test": "node _test_wuwei.js && node _test_endpoints.js",
-    "test:unit": "node _test_wuwei.js",
-    "test:endpoints": "node _test_endpoints.js",
-    "postinstall": "node -e \"try{require('fs').rmSync('remote-agent/node_modules',{recursive:true,force:true})}catch(e){}\""
+    "test": "node _test.js"
   },
-  "keywords": ["remote", "repair", "agent", "windows", "diagnostics", "dao", "zero-config", "zero-cost", "tunnel"],
+  "keywords": [
+    "remote",
+    "agent",
+    "powershell",
+    "tunnel",
+    "nat-traversal",
+    "dao",
+    "zero-config",
+    "zero-cost",
+    "sandwich-architecture"
+  ],
   "license": "MIT",
   "dependencies": {
     "ws": "^8.19.0"

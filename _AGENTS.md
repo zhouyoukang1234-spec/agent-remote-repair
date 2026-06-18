@@ -1,23 +1,23 @@
 # AGENTS.md — AI Agent 操作指南
 
 ## 项目性质
-远程电脑诊断与修复系统，包含 WebSocket 远程中枢 + PowerShell 安全守护 + 硬件排查知识库。
+三明治远程中枢：操控端(云/本地 Agent) → 中枢(本进程+出站隧道) → 被控端(任意机器一行 PowerShell)。
+本源 = 内网穿透 dao-bridge 插件核心；大道至简，零配置零费用。
 
-## 工具矩阵
-
-| 工具 | 用途 | 启动方式 |
-|------|------|----------|
-| `desktop_guardian.ps1` | 23项诊断/14项修复/hosts守护/JSON报告 | `pwsh -File desktop_guardian.ps1 -Action diagnose` |
-| `remote-agent/server.js` | WebSocket远程诊断中枢 | `cd remote-agent && node server.js` |
-| `remote-agent/brain.js` | CLI: exec/auto/state/say/msg | `node brain.js auto` |
-| `诊断手册_笔记本开机自动关机.md` | 硬件排查知识库(8章) | 直接阅读 |
+## 关键文件
+| 文件 | 用途 |
+|------|------|
+| `core.js` | 本源核心：Hub(注册表+队列/轮询/结果+agent_id 路由) + 统一路由 + HTTP server + relay 桥 + `/api/bootstrap.ps1` |
+| `dao.js` | 入口：`node dao.js` 起 server + 隧道 + 打印接入文档 |
+| `remote-agent/dao_tunnel.js` | 出站隧道（cloudflared/ngrok/SSH 自适应）|
+| `ps-agent/ps_agent_client.ps1` | 被控端全能客户端（富能力）|
+| `ps-agent/ps_agent_server.py` | 本源参考（原版 Python 中枢）|
 
 ## Agent 规则
-1. **诊断优先于修复** — 先 `diagnose`，看清问题再 `fix`
-2. **hosts-guard 持续运行** — 防止恶意软件反复写入 hosts
-3. **远程中枢需管理员 Agent** — `irm http://host:3002/agent.ps1 | iex` 需管理员权限
-4. **Brain CLI 是 Agent 的手** — 通过 `brain.js exec` 执行远程命令
+1. **操控端只认 REST**：`POST /api/exec-sync {agent_id,cmd}`。`agent_id` 空 = 中枢本机；填 hostname/别名 = 对应被控端。
+2. **被控端零安装**：目标机 `irm <中枢URL>/api/bootstrap.ps1 | iex` 即接入；窗口不关 = 常驻可控。
+3. **先看 agents 再下发**：`GET /api/agents` 确认目标在线。
+4. **master token 必带**：除 `/api/health` 与 `/api/bootstrap.ps1` 外，操控端端点都要 `Authorization: Bearer <Token>`。
 
-## 关联
-- `remote-agent/README.md` — 远程中枢详细架构
-- `docs/双机保护手册.md` — 详细保护体系
+## 自检
+`npm test` — 三明治端到端契约（无需外网）。
