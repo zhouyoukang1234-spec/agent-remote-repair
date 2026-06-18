@@ -17,7 +17,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 
-const { Hub, startServer, connectRelay } = require("./core");
+const { Hub, startServer, connectRelay, buildCloudDoc } = require("./core");
 const tunnel = require("./tunnel");
 
 const pkg = (() => {
@@ -63,66 +63,7 @@ const SESSION = conn.session || crypto.randomBytes(16).toString("hex");
 const hub = new Hub({ token: TOKEN, version: pkg.version, root: os.homedir() });
 
 function exportDoc() {
-  const url = hub.publicUrl || "http://<本机IP>:" + hub.port;
-  const md = `# ☯ 道 · 云端 Agent 接入文档
-
-> 道法自然 · 自动生成。把它发给云端/本地 Agent 即可操控本中枢与一切接入的被控端。
-
-## 接入点
-
-\`\`\`
-URL:   ${url}
-Token: ${hub.token}
-Auth:  Authorization: Bearer <Token>
-隧道:  ${hub.tunnelMethod || (NO_TUNNEL ? "lan-only" : "pending")}
-\`\`\`
-
-## 三明治架构
-
-\`\`\`
-操控端 (你/云端 Devin, REST)  ──agent_id 选目标──▶  中枢 (本机 ${hub.host} + 隧道)  ──▶  被控端 (任意机器, 一行 PowerShell)
-\`\`\`
-
-## 操控端 API（需 Bearer Token）
-
-| 方法 | 路径 | Body | 说明 |
-|---|---|---|---|
-| GET  | /api/health | - | 存活（免鉴权）|
-| GET  | /api/info | - | 中枢信息 |
-| GET  | /api/agents | - | 在线被控端列表 |
-| POST | /api/exec-sync | {agent_id,cmd,timeout} | 同步执行（agent_id 空=中枢本机）|
-| POST | /api/exec | {agent_id,cmd} | 异步下发 |
-| POST | /api/broadcast | {cmd} | 广播到所有被控端 |
-| POST | /api/ls / /api/read / /api/write | {path,...} | 中枢机文件操作 |
-| GET  | /api/bootstrap.ps1 | - | 被控端一行接入脚本（免鉴权）|
-
-## 被控端接入（任意 Windows 机器，一行）
-
-\`\`\`powershell
-irm ${url}/api/bootstrap.ps1 | iex
-\`\`\`
-
-接入后用 \`GET /api/agents\` 看到它，再 \`POST /api/exec-sync {agent_id:"<hostname>", cmd:"hostname"}\` 即可操控。
-
-## Python SDK（操控端）
-
-\`\`\`python
-import urllib.request, json, ssl, os
-for k in ('HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy'): os.environ.pop(k,None)
-os.environ['NO_PROXY']='*'
-ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPSHandler(context=ctx)))
-URL=${JSON.stringify(url)}; TOKEN=${JSON.stringify(hub.token)}
-def api(m,p,body=None,t=40):
-    d=json.dumps(body).encode() if body else None
-    req=urllib.request.Request(f"{URL}{p}",data=d,headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},method=m)
-    return json.loads(urllib.request.urlopen(req,timeout=t).read())
-print(api("GET","/api/agents"))
-print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"hostname"}))   # 中枢本机
-\`\`\`
-
-*道法自然 · 无为而无不为*
-`;
+  const md = buildCloudDoc(hub);
   try {
     fs.writeFileSync(path.join(os.homedir(), "DAO_CLOUD_AGENT.md"), md, "utf8");
   } catch {}

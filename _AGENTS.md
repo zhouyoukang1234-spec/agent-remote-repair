@@ -7,7 +7,7 @@
 ## 关键文件
 | 文件 | 用途 |
 |------|------|
-| `extension.js` | **最终产出**：VS Code 类编辑器扩展（激活=中枢、状态栏、7 命令）|
+| `extension.js` | **最终产出**：VS Code 类编辑器扩展（激活=中枢、状态栏、中枢状态台 Webview、8 命令）|
 | `core.js` | 本源核心：Hub(注册表+队列/轮询/结果+agent_id 路由) + 统一路由 + HTTP server + relay 桥 + `/api/bootstrap.ps1` |
 | `tunnel.js` | 出站隧道（cloudflared/ngrok/SSH 自适应）|
 | `dao.js` | CLI 孪生：`node dao.js` 起 server + 隧道 + 打印接入文档（与扩展同源 core）|

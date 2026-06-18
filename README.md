@@ -23,7 +23,9 @@
 npx @vscode/vsce package          # 产出 .vsix
 ```
 
-在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），状态栏显示 `本地:<port> · N 被控端`，命令面板搜 `DAO` 见 7 个命令。被控端短名映射用设置 `daoRemote.aliases`（软编码，无写死值）。
+在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），状态栏显示 `本地:<port> · N 被控端`，命令面板搜 `DAO` 见 8 个命令。被控端短名映射用设置 `daoRemote.aliases`（软编码，无写死值）。
+
+点状态栏（或命令 `DAO 远程中枢: 打开中枢状态台`）打开 **「DAO 中枢状态台」**：一窗汇总本机/中枢状态 + **通过 PowerShell 接入的在线设备列表**（每 3s 实时刷新）+ **一行接入指令的复制按钮**（URL 随隧道就绪实时刷新）。每当有设备接入/掉线，`~/DAO_CLOUD_AGENT.md` 云端文档**自动重写**——内含所有在线设备（含中枢）与操控逻辑，复制给云端/本地 Agent 即可让其知悉全部在线设备并直接操控。
 
 ## 一行启动（CLI 孪生，可选）
 
@@ -88,7 +90,7 @@ def api(m,p,body=None,t=40):
     req=urllib.request.Request(f"{URL}{p}",data=d,headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},method=m)
     return json.loads(urllib.request.urlopen(req,timeout=t).read())
 print(api("GET","/api/agents"))
-print(api("POST","/api/exec-sync",{"agent_id":"DESKTOP-MASTER","cmd":"hostname"}))
+print(api("POST","/api/exec-sync",{"agent_id":"<被控端主机名>","cmd":"hostname"}))
 print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"whoami"}))   # 中枢本机
 ```
 
@@ -107,7 +109,7 @@ print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"whoami"}))   # 中枢本
 
 | 文件 | 角色 |
 |---|---|
-| `extension.js` | **最终产出** — VS Code 类编辑器扩展：激活即中枢=本编辑器，状态栏 + 7 命令，零中心、零配置 |
+| `extension.js` | **最终产出** — VS Code 类编辑器扩展：激活即中枢=本编辑器，状态栏 + 中枢状态台(Webview，实时刷新设备列表+复制接入指令) + 8 命令，零中心、零配置 |
 | `core.js` | **本源核心** — Hub（agent 注册表 + 队列/轮询/结果 + agent_id 路由）、统一路由、本机 HTTP server、relay 桥、`/api/bootstrap.ps1` |
 | `tunnel.js` | 出站隧道（cloudflared → ngrok → SSH 自适应，自动下载，零配置）|
 | `dao.js` | 极简 CLI 孪生 — `node dao.js` 起 server + 隧道 + 打印/落盘接入文档（与扩展同源 core）|

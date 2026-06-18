@@ -34,6 +34,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "daoRemote.showPanel",
+        "title": "DAO 远程中枢: 打开中枢状态台"
+      },
+      {
         "command": "daoRemote.start",
         "title": "DAO 远程中枢: 启动"
       },

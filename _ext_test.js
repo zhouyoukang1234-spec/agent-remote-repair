@@ -21,8 +21,10 @@ let statusItem = null;
 const infoMsgs = [];
 const clipboard = { _v: "" };
 const cfgStore = { port: 0, lanOnly: true, relayUrl: "" }; // lanOnly=true：测试不开公网隧道
+let lastPanel = null;
 const vscodeMock = {
   StatusBarAlignment: { Left: 1, Right: 2 },
+  ViewColumn: { Active: -1, Beside: -2 },
   window: {
     createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
     createStatusBarItem: () => (statusItem = { text: "", tooltip: "", command: "", show() {}, hide() {}, dispose() {} }),
@@ -30,6 +32,16 @@ const vscodeMock = {
     showWarningMessage: (m) => { infoMsgs.push(m); },
     showTextDocument: async () => ({}),
     showQuickPick: async (items) => items && items[0],
+    createWebviewPanel: () => {
+      lastPanel = {
+        _posted: [], _msg: null, _disposed: false,
+        webview: { _html: "", set html(v) { this._html = v; }, get html() { return this._html; },
+          postMessage: async (m) => { lastPanel._posted.push(m); return true; },
+          onDidReceiveMessage: (fn) => { lastPanel._msg = fn; return { dispose() {} }; } },
+        reveal() {}, onDidDispose() { return { dispose() {} }; }, dispose() { this._disposed = true; },
+      };
+      return lastPanel;
+    },
   },
   workspace: {
     getConfiguration: () => ({ get: (k) => cfgStore[k] }),
@@ -72,9 +84,19 @@ function api(base, method, p, body, token) {
   const context = { subscriptions: subs };
 
   await ext.activate(context);
-  ok("activate registers 7 commands", Object.keys(commands).length === 7 &&
-    ["daoRemote.start","daoRemote.stop","daoRemote.restart","daoRemote.copyBootstrap","daoRemote.copyToken","daoRemote.showInfo","daoRemote.showAgents"].every((c) => commands[c]));
+  ok("activate registers 8 commands", Object.keys(commands).length === 8 &&
+    ["daoRemote.showPanel","daoRemote.start","daoRemote.stop","daoRemote.restart","daoRemote.copyBootstrap","daoRemote.copyToken","daoRemote.showInfo","daoRemote.showAgents"].every((c) => commands[c]));
   ok("activate creates a status bar item", !!statusItem && /DAO/.test(statusItem.text));
+  ok("status bar opens 中枢状态台", statusItem.command === "daoRemote.showPanel");
+
+  // 中枢状态台：面板渲染 + 实时推送 + 复制按钮回传
+  await commands["daoRemote.showPanel"]();
+  ok("showPanel builds webview with copy button", !!lastPanel && /中枢状态台/.test(lastPanel.webview.html) && /copyBoot/.test(lastPanel.webview.html));
+  await lastPanel._msg({ type: "ready" });
+  const pushed = lastPanel._posted[lastPanel._posted.length - 1];
+  ok("panel receives live device state", !!pushed && /\/api\/bootstrap\.ps1 \| iex/.test(pushed.bootstrap) && Array.isArray(pushed.agents));
+  await lastPanel._msg({ type: "copyBootstrap" });
+  ok("panel copy button copies one-liner", /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v));
 
   // 拿到扩展宿主里中枢的端口/token（经 conn.json 持久化，复用 dao.js 的核心）
   const conn = require(path.join(require("os").homedir(), ".dao-remote", "conn.json"));

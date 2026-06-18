@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════
 "use strict";
 const http = require("http");
-const { Hub, startServer, buildBootstrap } = require("./core");
+const { Hub, startServer, buildBootstrap, buildCloudDoc } = require("./core");
 
 let pass = 0;
 let fail = 0;
@@ -95,6 +95,11 @@ function api(base, method, p, body, token) {
 
   const agents = (await api(BASE, "GET", "/api/agents", null, TOKEN)).json;
   ok("agents list shows TEST-PC online", agents.agents.some((a) => a.id === "TEST-PC" && a.status === "online"));
+
+  // 云端文档：含中枢、在线设备清单、操作逻辑（随设备接入刷新）
+  const doc = buildCloudDoc(hub);
+  ok("cloud doc lists online device TEST-PC", doc.includes("TEST-PC") && doc.includes("在线设备"));
+  ok("cloud doc carries hub + auth + bootstrap logic", doc.includes(hub.host) && doc.includes("Authorization: Bearer") && doc.includes("/api/bootstrap.ps1"));
 
   // 三明治核心：操控端 → 中枢 → 被控端 同步往返
   const routed = await api(BASE, "POST", "/api/exec-sync", { agent_id: "TEST-PC", cmd: "Get-Date", timeout: 10 }, TOKEN);

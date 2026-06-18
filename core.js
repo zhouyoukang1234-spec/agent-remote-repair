@@ -442,6 +442,82 @@ while($true){
 }
 
 // ═══════════════════════════════════════════════════════════
+// 云端 Agent 接入文档 — 把它发给云端/本地 Agent 即可操控本中枢与一切被控端。
+// 含「所有在线设备（含中枢自己）+ 操作逻辑」，随设备接入实时刷新。
+// ═══════════════════════════════════════════════════════════
+
+function buildCloudDoc(hub) {
+  const url = hub.publicUrl || "http://127.0.0.1:" + hub.port;
+  const tunnel = hub.tunnelMethod || "pending";
+  const online = hub.agentList().filter((a) => a.status === "online");
+  // 设备清单：中枢自己（agent_id 空）置顶，其余被控端依次列出
+  const rows = [["（空）/ " + hub.host, "中枢本机", process.platform, "—", "★ 中枢"]];
+  for (const a of online) rows.push([a.id, a.hostname, a.os, a.last_seen, a.user]);
+  const table =
+    "| agent_id | 主机名 | 系统 | last_seen | 备注/用户 |\n|---|---|---|---|---|\n" +
+    rows.map((r) => "| `" + r[0] + "` | " + r[1] + " | " + r[2] + " | " + r[3] + " | " + r[4] + " |").join("\n");
+
+  return `# ☯ 道 · 云端 Agent 接入文档
+
+> 道法自然 · 自动生成，随设备接入实时刷新。把它发给云端/本地 Agent，即可操控本中枢与一切已接入的被控端。
+
+## 接入点
+
+\`\`\`
+URL:   ${url}
+Token: ${hub.token}
+Auth:  Authorization: Bearer <Token>
+隧道:  ${tunnel}
+\`\`\`
+
+## 三明治架构
+
+\`\`\`
+操控端 (你/云端 Agent, REST)  ──agent_id 选目标──▶  中枢 (本机 ${hub.host} + 隧道)  ──▶  被控端 (任意机器, 一行 PowerShell)
+\`\`\`
+
+## 当前在线设备（共 ${online.length} 台被控端 + 1 中枢）
+
+${table}
+
+> \`agent_id\` 为空（或 \`self\`/\`local\`/中枢主机名）= 操控**中枢本机**；填某台**主机名**= 操控对应被控端。
+
+## 操作逻辑（操控端 API，需 \`Authorization: Bearer <Token>\`）
+
+| 方法 | 路径 | Body | 说明 |
+|---|---|---|---|
+| GET  | /api/agents | - | 在线设备列表（先看再下发）|
+| POST | /api/exec-sync | {agent_id,cmd,timeout} | 同步执行（agent_id 空=中枢本机）|
+| POST | /api/exec | {agent_id,cmd} | 异步下发，返回 cmd_id |
+| POST | /api/broadcast | {cmd} | 广播到所有被控端 |
+| GET  | /api/bootstrap.ps1 | - | 被控端一行接入脚本（免鉴权）|
+
+## 被控端接入（任意 Windows 机器，一行）
+
+\`\`\`powershell
+irm ${url}/api/bootstrap.ps1 | iex
+\`\`\`
+
+接入后 \`GET /api/agents\` 即见到它，再 \`POST /api/exec-sync {agent_id:"<主机名>", cmd:"hostname"}\` 即可操控。
+
+## Python SDK（操控端，复制即用）
+
+\`\`\`python
+import urllib.request, json
+URL=${JSON.stringify(url)}; TOKEN=${JSON.stringify(hub.token)}
+def api(m,p,body=None,t=40):
+    d=json.dumps(body).encode() if body else None
+    req=urllib.request.Request(f"{URL}{p}",data=d,headers={"Authorization":f"Bearer {TOKEN}","Content-Type":"application/json"},method=m)
+    return json.loads(urllib.request.urlopen(req,timeout=t).read())
+print(api("GET","/api/agents"))                                   # 所有在线设备
+print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"hostname"}))  # 中枢本机
+\`\`\`
+
+*道法自然 · 无为而无不为*
+`;
+}
+
+// ═══════════════════════════════════════════════════════════
 // 本机 HTTP server
 // ═══════════════════════════════════════════════════════════
 
@@ -576,4 +652,4 @@ function connectRelay(hub, opts) {
   };
 }
 
-module.exports = { Hub, handleRoute, startServer, connectRelay, buildBootstrap, runShell, findAvailablePort };
+module.exports = { Hub, handleRoute, startServer, connectRelay, buildBootstrap, buildCloudDoc, runShell, findAvailablePort };
