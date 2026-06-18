@@ -1,14 +1,13 @@
 // ═══════════════════════════════════════════════════════════
-// 道 · VSCode 扩展宿主自检 — 用 mock vscode 模块在无 GUI 下验证
-//   extension.activate() → startHub → core HTTP server + 命令 + 状态栏
-//   再让真实进程经"扩展宿主里的中枢"接入并被操控（端到端）。
-//   仅在 win32 跑被控端实测；其余平台只验证激活/命令注册。
+// 道 · 插件自检（本源 dao-bridge-ext + 三明治演化）— mock vscode，无 GUI。
+//   验证：WorkspaceServer 路由(connect/poll/result/exec 路由/broadcast/bootstrap)
+//   + 前端 html() 含本源4模块 + 演化「在线设备」模块
+//   + state()/generateCloudAgentMd() 含设备清单与一行接入指令
+//   + activate 注册本源命令 + 侧栏视图 daoBridgeView。
+//   仅在 win32 跑 SELF 的 UTF-8/退出码实测；被控端路由用进程内模拟轮询验证。
 // ═══════════════════════════════════════════════════════════
 "use strict";
-const path = require("path");
 const http = require("http");
-const fs = require("fs");
-const { execFile } = require("child_process");
 
 let pass = 0, fail = 0;
 function ok(name, cond) {
@@ -16,51 +15,49 @@ function ok(name, cond) {
   else { fail++; console.log("  \u2717 " + name); }
 }
 
-// ── 最小 vscode mock：仅实现 extension.js 用到的面 ──
+// ── 最小 vscode mock ──
 const commands = {};
-let statusItem = null;
 const infoMsgs = [];
 const clipboard = { _v: "" };
-const cfgStore = { port: 0, lanOnly: true, relayUrl: "" }; // lanOnly=true：测试不开公网隧道
-let lastPanel = null;
+const cfgStore = {
+  relayUrl: "", disableRelay: true, autoProxy: false, confineToWorkspace: false,
+  cloudflaredPath: "", cfApiToken: "", tunnelToken: "", hostname: "", localPort: 0,
+  accessToken: "", proxyUrl: "", session: "",
+};
 let lastViewProvider = null;
-let lastView = null;
 const vscodeMock = {
   StatusBarAlignment: { Left: 1, Right: 2 },
   ViewColumn: { Active: -1, Beside: -2 },
+  Uri: { parse: (s) => ({ toString: () => s }) },
   window: {
     createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
-    createStatusBarItem: () => (statusItem = { text: "", tooltip: "", command: "", show() {}, hide() {}, dispose() {} }),
+    createStatusBarItem: () => ({ text: "", tooltip: "", command: "", show() {}, hide() {}, dispose() {} }),
+    setStatusBarMessage: () => ({ dispose() {} }),
     showInformationMessage: (m) => { infoMsgs.push(m); },
     showWarningMessage: (m) => { infoMsgs.push(m); },
+    showErrorMessage: (m) => { infoMsgs.push(m); },
     showTextDocument: async () => ({}),
-    showQuickPick: async (items) => items && items[0],
-    createWebviewPanel: () => {
-      lastPanel = {
-        _posted: [], _msg: null, _disposed: false,
-        webview: { _html: "", set html(v) { this._html = v; }, get html() { return this._html; },
-          postMessage: async (m) => { lastPanel._posted.push(m); return true; },
-          onDidReceiveMessage: (fn) => { lastPanel._msg = fn; return { dispose() {} }; } },
-        reveal() {}, onDidDispose() { return { dispose() {} }; }, dispose() { this._disposed = true; },
-      };
-      return lastPanel;
-    },
     registerWebviewViewProvider: (id, provider) => { lastViewProvider = { id, provider }; return { dispose() {} }; },
   },
   workspace: {
-    getConfiguration: () => ({ get: (k) => cfgStore[k] }),
+    workspaceFolders: [],
+    name: "",
+    getConfiguration: () => ({ get: (k) => cfgStore[k], update: async () => {} }),
     openTextDocument: async (o) => o,
   },
-  env: { clipboard: { writeText: async (t) => { clipboard._v = t; }, readText: async () => clipboard._v } },
+  env: {
+    appName: "Test VS Code", machineId: "m", sessionId: "s",
+    clipboard: { writeText: async (t) => { clipboard._v = t; }, readText: async () => clipboard._v },
+    openExternal: async () => true,
+  },
+  version: "1.124.0",
   commands: { registerCommand: (id, fn) => { commands[id] = fn; return { dispose() {} }; } },
-  StatusBarItem: function () {},
 };
 
 // 注入 mock：劫持 require('vscode')
 const Module = require("module");
-const origResolve = Module._resolveFilename;
 const origLoad = Module._load;
-Module._load = function (request, parent, isMain) {
+Module._load = function (request) {
   if (request === "vscode") return vscodeMock;
   return origLoad.apply(this, arguments);
 };
@@ -74,7 +71,7 @@ function api(base, method, p, body, token) {
     const req = http.request(u, { method, headers }, (res) => {
       const c = [];
       res.on("data", (d) => c.push(d));
-      res.on("end", () => { let j = null; try { j = JSON.parse(Buffer.concat(c).toString("utf8")); } catch {} resolve({ status: res.statusCode, json: j }); });
+      res.on("end", () => { const raw = Buffer.concat(c).toString("utf8"); let j = null; try { j = JSON.parse(raw); } catch {} resolve({ status: res.statusCode, json: j, raw }); });
     });
     req.on("error", reject);
     if (data) req.write(data);
@@ -84,81 +81,101 @@ function api(base, method, p, body, token) {
 
 (async () => {
   const ext = require("./extension");
-  const subs = [];
-  const context = { subscriptions: subs };
+  const { Bridge, WorkspaceServer, BridgeViewProvider, buildBootstrap } = ext;
 
-  await ext.activate(context);
+  // ── 直接起 WorkspaceServer（不开隧道）──
+  const bridge = new Bridge({ subscriptions: [] });
+  const srv = bridge.srv;
+  await srv.start(0);
+  const BASE = "http://127.0.0.1:" + srv.port;
+  const TOKEN = srv.token;
 
-  // activate 不再阻塞 startHub（UI 即使中枢卡住也先可见），故等中枢就绪
-  const connPath = path.join(require("os").homedir(), ".dao-remote", "conn.json");
-  async function waitReady(ms) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < ms) {
-      try {
-        const c = JSON.parse(fs.readFileSync(connPath, "utf8"));
-        if ((await api("http://127.0.0.1:" + c.port, "GET", "/api/health").catch(() => ({ status: 0 }))).status === 200) return c;
-      } catch {}
-      await new Promise((r) => setTimeout(r, 100));
+  ok("hub answers /api/health (no auth)", (await api(BASE, "GET", "/api/health")).status === 200);
+  ok("protected route rejects without token", (await api(BASE, "GET", "/api/agents")).status === 401);
+
+  // bootstrap 脚本（免鉴权，纯文本）
+  const boot = await api(BASE, "GET", "/api/bootstrap.ps1");
+  ok("serves bootstrap.ps1 (no auth)", boot.status === 200 && /\/api\/connect/.test(boot.raw) && /\/api\/poll/.test(boot.raw));
+
+  // 被控端接入
+  const sysinfo = { hostname: "TEST-PC", username: "u", os_version: "win-test", capabilities: ["shell"] };
+  const conn = await api(BASE, "POST", "/api/connect", { sysinfo });
+  ok("被控端 connect 返回 agent_id + token", conn.status === 200 && conn.json.agent_id === "TEST-PC" && !!conn.json.token);
+  const aid = conn.json.agent_id, atok = conn.json.token;
+
+  const agents = await api(BASE, "GET", "/api/agents", null, TOKEN);
+  ok("/api/agents 列出在线被控端", agents.status === 200 && agents.json.agents.some((a) => a.id === "TEST-PC" && a.status === "online"));
+
+  // 进程内模拟被控端：长轮询取命令 → 回传结果
+  let polling = true;
+  (async function poller() {
+    while (polling) {
+      const pr = await api(BASE, "POST", "/api/poll", { id: aid, token: atok, timeout: 2 }).catch(() => ({ json: { commands: [] } }));
+      for (const c of (pr.json && pr.json.commands) || []) {
+        await api(BASE, "POST", "/api/result", { agent_id: aid, token: atok, cmd_id: c.cmd_id, result: { stdout: "echo:" + (c.payload && c.payload.command), stderr: "", exit_code: 0 } });
+      }
     }
-    throw new Error("hub not ready in time");
-  }
-  const conn = await waitReady(15000);
+  })();
 
-  ok("activate registers 8 commands", Object.keys(commands).length === 8 &&
-    ["daoRemote.showPanel","daoRemote.start","daoRemote.stop","daoRemote.restart","daoRemote.copyBootstrap","daoRemote.copyToken","daoRemote.showInfo","daoRemote.showAgents"].every((c) => commands[c]));
-  ok("activate creates a status bar item", !!statusItem && /DAO/.test(statusItem.text));
-  ok("status bar opens 中枢状态台", statusItem.command === "daoRemote.showPanel");
+  // 操控端 → 中枢 → 被控端（exec-sync 路由）
+  const routed = await api(BASE, "POST", "/api/exec-sync", { agent_id: "TEST-PC", cmd: "hostname", timeout: 10 }, TOKEN);
+  ok("exec-sync 路由到被控端并回结果", routed.status === 200 && routed.json.status === "completed" && routed.json.agent_id === "TEST-PC" && /echo:hostname/.test(routed.json.result.stdout));
 
-  // 侧边栏常驻视图：装好即可见的「前端」
-  ok("registers sidebar webview view provider", !!lastViewProvider && lastViewProvider.id === "daoRemote.statusView");
-  lastView = {
-    _posted: [], _msg: null,
-    webview: { options: {}, _html: "", set html(v) { this._html = v; }, get html() { return this._html; },
-      postMessage: async (m) => { lastView._posted.push(m); return true; },
-      onDidReceiveMessage: (fn) => { lastView._msg = fn; return { dispose() {} }; } },
-    onDidDispose() { return { dispose() {} }; },
-  };
-  lastViewProvider.provider.resolveWebviewView(lastView);
-  ok("sidebar view renders 中枢状态台 with copy button", /中枢状态台/.test(lastView.webview.html) && /copyBoot/.test(lastView.webview.html));
-  await lastView._msg({ type: "ready" });
-  const vpushed = lastView._posted[lastView._posted.length - 1];
-  ok("sidebar view receives live device state", !!vpushed && /\/api\/bootstrap\.ps1 \| iex/.test(vpushed.bootstrap));
+  // 广播到所有被控端
+  const bc = await api(BASE, "POST", "/api/broadcast", { cmd: "whoami" }, TOKEN);
+  ok("broadcast 入队所有被控端", bc.status === 200 && Array.isArray(bc.json.delivered) && bc.json.delivered.some((d) => d.agent_id === "TEST-PC"));
 
-  // 中枢状态台：面板渲染 + 实时推送 + 复制按钮回传
-  await commands["daoRemote.showPanel"]();
-  ok("showPanel builds webview with copy button", !!lastPanel && /中枢状态台/.test(lastPanel.webview.html) && /copyBoot/.test(lastPanel.webview.html));
-  await lastPanel._msg({ type: "ready" });
-  const pushed = lastPanel._posted[lastPanel._posted.length - 1];
-  ok("panel receives live device state", !!pushed && /\/api\/bootstrap\.ps1 \| iex/.test(pushed.bootstrap) && Array.isArray(pushed.agents));
-  await lastPanel._msg({ type: "copyBootstrap" });
-  ok("panel copy button copies one-liner", /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v));
+  // 找不到的被控端
+  const nf = await api(BASE, "POST", "/api/exec-sync", { agent_id: "NO-SUCH", cmd: "x", timeout: 3 }, TOKEN);
+  ok("路由到不存在的被控端返回 404", nf.status === 404);
 
-  // 拿到扩展宿主里中枢的端口/token（经 conn.json 持久化，复用 dao.js 的核心）
-  const BASE = "http://127.0.0.1:" + conn.port;
-  const TOKEN = conn.token;
+  polling = false;
 
-  ok("extension-hosted hub answers /api/health", (await api(BASE, "GET", "/api/health")).status === 200);
-  ok("copyBootstrap puts one-liner on clipboard", (await commands["daoRemote.copyBootstrap"](), /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v)));
-  await commands["daoRemote.copyToken"]();
-  ok("copyToken copies the master token", clipboard._v === TOKEN);
-
-  // SELF 经扩展宿主中枢执行（win32 验证 UTF-8 + 退出码；其他平台只验证 200）
+  // SELF（agent_id 空）→ 中枢本机执行（win32 验证 UTF-8 + 退出码）
   if (process.platform === "win32") {
-    const u8 = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", cmd: 'Write-Output "中文-扩展宿主"', timeout: 20 }, TOKEN);
-    ok("EDH SELF preserves UTF-8", u8.status === 200 && u8.json.result.stdout.includes("中文") && !u8.json.result.stdout.includes("?"));
+    const u8 = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", cmd: 'Write-Output "中文-本机"', timeout: 20 }, TOKEN);
+    ok("SELF 保留 UTF-8（中文不乱码）", u8.status === 200 && u8.json.result.stdout.includes("中文") && !u8.json.result.stdout.includes("?"));
     const ec = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", cmd: "cmd /c exit 5", timeout: 20 }, TOKEN);
-    ok("EDH SELF propagates exit code 5", ec.status === 200 && ec.json.result.exit_code === 5);
+    ok("SELF 透传退出码 5", ec.status === 200 && ec.json.result.exit_code === 5);
   } else {
-    const s = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", cmd: "echo edh-ok", timeout: 20 }, TOKEN);
-    ok("EDH SELF runs on hub", s.status === 200 && s.json.result.stdout.includes("edh-ok"));
-    ok("EDH non-win exit (skipped)", true);
+    const s = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", cmd: "echo self-ok", timeout: 20 }, TOKEN);
+    ok("SELF 在中枢本机执行", s.status === 200 && s.json.result.stdout.includes("self-ok"));
+    ok("SELF 退出码（非 win 跳过）", true);
   }
 
+  // ── 前端 html()：本源4模块 + 演化设备模块 ──
+  bridge.url = "https://example.trycloudflare.com";
+  const provider = new BridgeViewProvider({ subscriptions: [] }, bridge);
+  const html = provider.html();
+  ok("html 含本源·实时状态模块", /公网穿透状态/.test(html));
+  ok("html 含本源·命名隧道模块", /命名隧道/.test(html));
+  ok("html 含本源·导出接入文档模块", /导出接入文档/.test(html));
+  ok("html 含本源·能力自测模块", /能力自测/.test(html));
+  ok("html 含演化·在线设备模块 + 复制按钮", /在线设备 · 汇入中枢/.test(html) && /copyBootstrap/.test(html));
+
+  // ── state() / cloud MD：设备清单 + 一行接入指令 ──
+  const st = bridge.state();
+  ok("state 含 agents 数组 + bootstrap 一行指令", Array.isArray(st.agents) && /\/api\/bootstrap\.ps1 \| iex/.test(st.bootstrap) && st.host);
+  const md = bridge.generateCloudAgentMd();
+  ok("cloud MD 含设备清单表头 + 在线被控端", /agent_id \| 主机名/.test(md) && /TEST-PC/.test(md));
+  ok("cloud MD 含被控端一行接入指令", /\/api\/bootstrap\.ps1 \| iex/.test(md));
+
+  ok("buildBootstrap 注入 hub URL", /example\.trycloudflare\.com/.test(buildBootstrap("https://example.trycloudflare.com")));
+
+  srv.stop();
+
+  // ── activate：注册本源命令 + 侧栏视图（start 打桩，避免开隧道）──
+  Bridge.prototype.start = async function () { return ""; };
+  const subs = [];
+  ext.activate({ subscriptions: subs });
+  const want = ["daoBridge.restart", "daoBridge.copyBootstrap", "daoBridge.logout", "daoBridge.openMd", "daoBridge.exportCloudMd", "daoBridge.exportLocalMd"];
+  ok("activate 注册本源6命令 + copyBootstrap", want.every((c) => typeof commands[c] === "function"));
+  ok("activate 注册侧栏 daoBridgeView", !!lastViewProvider && lastViewProvider.id === "daoBridgeView");
+  await commands["daoBridge.copyBootstrap"]();
+  ok("copyBootstrap 复制一行接入指令", /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v));
   ext.deactivate();
-  ok("deactivate stops hub", (await api(BASE, "GET", "/api/health").catch(() => ({ status: 0 }))).status === 0);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   Module._load = origLoad;
-  Module._resolveFilename = origResolve;
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error("ext-test crashed:", e); process.exit(1); });

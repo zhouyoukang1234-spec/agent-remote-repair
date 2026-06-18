@@ -2,6 +2,22 @@
 
 本项目遵循语义化版本。日期格式 YYYY-MM-DD。
 
+## [9.2.0] - 2026-06-18
+
+回归本源 · 在本源 dao-bridge 插件上演化，而非另起炉灶。以
+[devin-remote](https://github.com/zhouyoukang1234-spec/devin-remote) 的 `dao-bridge-ext/extension.js`（1606 行）为不可变基底，
+将「公网设备汇入单一中枢」的核心能力**嫁接**其上——前端、隧道生命周期、CF 登录/中继/命名隧道全部沿用本源，
+仅做最小增量。
+
+### 演化（在本源基础上增量）
+- **三明治路由**：新增被控端端点 `/api/connect`、`/api/poll`（长轮询）、`/api/result`、`/api/heartbeat`（均以 per-agent token 自证，免 master token）；`/api/bootstrap.ps1` 免鉴权下发一行接入脚本。
+- **exec / exec-sync 按 `agent_id` 路由**：留空/`self`/`local`/中枢主机名 → 中枢本机执行（本源 SELF·UTF-8+退出码）；填主机名 → 入队转发被控端，`exec-sync` 同步等回结果，`exec` 返回 `cmd_id`。`/api/broadcast` 入队所有被控端。
+- **前端演化**：在本源 4 模块（实时状态 / 命名隧道 / 导出文档 / 能力自测）基础上，新增「📡 在线设备 · 汇入中枢」模块——一行接入指令复制按钮 + 在线设备表，3s 实时刷新。
+- **云端 MD 演化**：`generateCloudAgentMd()` 新增「当前在线设备（中枢 + 被控端）」清单与一行接入指令，复制给 Agent 即知全部在线设备与按 `agent_id` 操控逻辑。
+- **package.json 对齐本源**：`displayName = DAO Bridge · 公网穿透`，contributes 用本源 `daoBridge` 活动栏容器 / `daoBridgeView` 视图 / `daoBridge.*` 命令 / 完整配置项；新增 `daoBridge.copyBootstrap` 命令；保留我方仓库元数据与全 IDE 适配（`engines ^1.74.0`、capabilities）。
+
+测试：`npm test` 42/42 通过（20 core + 22 ext）。
+
 ## [9.0.1] - 2026-06-18
 
 修复「装进真实 VS Code 后看不到任何前端」的可用性问题。

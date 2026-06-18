@@ -1,8 +1,8 @@
 {
   "name": "agent-remote-repair",
-  "displayName": "DAO 远程中枢 · 三明治穿透",
-  "version": "9.0.1",
-  "description": "道 · 远程中枢 — 三明治架构: 操控端(云/本地 Agent) → 中枢(本插件+出站隧道) → 被控端(一行 PowerShell)。大道至简·零配置·零费用",
+  "displayName": "DAO Bridge · 公网穿透",
+  "version": "9.2.0",
+  "description": "本源 dao-bridge 公网穿透插件 · 演化：公网任意设备一行 PowerShell 汇入单一中枢，按 agent_id 全方位操控。无账号默认快速隧道；可选用户 Cloudflare 命名隧道；内置 cloudflared、代理自适应、Worker 中继回退。道法自然·无为而无不为。",
   "publisher": "dao",
   "engines": {
     "vscode": "^1.74.0"
@@ -21,8 +21,7 @@
     }
   },
   "activationEvents": [
-    "onStartupFinished",
-    "onView:daoRemote.statusView"
+    "onStartupFinished"
   ],
   "main": "./extension.js",
   "bin": {
@@ -40,81 +39,44 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "daoRemote",
-          "title": "DAO 远程中枢",
-          "icon": "media/dao.svg"
+          "id": "daoBridge",
+          "title": "DAO Bridge",
+          "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "daoRemote": [
+      "daoBridge": [
         {
-          "id": "daoRemote.statusView",
-          "name": "中枢状态台",
-          "type": "webview"
+          "type": "webview",
+          "id": "daoBridgeView",
+          "name": "公网穿透"
         }
       ]
     },
     "commands": [
-      {
-        "command": "daoRemote.showPanel",
-        "title": "DAO 远程中枢: 打开中枢状态台"
-      },
-      {
-        "command": "daoRemote.start",
-        "title": "DAO 远程中枢: 启动"
-      },
-      {
-        "command": "daoRemote.stop",
-        "title": "DAO 远程中枢: 停止"
-      },
-      {
-        "command": "daoRemote.restart",
-        "title": "DAO 远程中枢: 重启隧道"
-      },
-      {
-        "command": "daoRemote.copyBootstrap",
-        "title": "DAO 远程中枢: 复制被控端一行接入指令"
-      },
-      {
-        "command": "daoRemote.copyToken",
-        "title": "DAO 远程中枢: 复制中枢 Token"
-      },
-      {
-        "command": "daoRemote.showInfo",
-        "title": "DAO 远程中枢: 查看接入信息"
-      },
-      {
-        "command": "daoRemote.showAgents",
-        "title": "DAO 远程中枢: 查看在线被控端"
-      }
+      { "command": "daoBridge.restart", "title": "DAO Bridge: 重启隧道" },
+      { "command": "daoBridge.copyBootstrap", "title": "DAO Bridge: 复制被控端一行接入指令" },
+      { "command": "daoBridge.logout", "title": "DAO Bridge: 退出账号 / 重置为无账号模式" },
+      { "command": "daoBridge.openMd", "title": "DAO Bridge: 打开云端Agent接入文档" },
+      { "command": "daoBridge.exportCloudMd", "title": "DAO Bridge: 导出云端Agent MD" },
+      { "command": "daoBridge.exportLocalMd", "title": "DAO Bridge: 导出本地Agent配置MD" }
     ],
     "configuration": {
-      "title": "DAO 远程中枢",
+      "title": "DAO Bridge",
       "properties": {
-        "daoRemote.port": {
-          "type": "number",
-          "default": 3002,
-          "description": "中枢本地 HTTP 端口（被占用自动顺延）"
-        },
-        "daoRemote.lanOnly": {
-          "type": "boolean",
-          "default": false,
-          "description": "仅本地/局域网，不开公网隧道"
-        },
-        "daoRemote.relayUrl": {
-          "type": "string",
-          "default": "",
-          "description": "（可选）Worker+DO 中继端点；留空走 cloudflared 快速隧道"
-        },
-        "daoRemote.aliases": {
-          "type": "object",
-          "default": {},
-          "additionalProperties": {
-            "type": "string"
-          },
-          "markdownDescription": "被控端短名 → 真实主机名 的映射（软编码，键名大小写不敏感）。例：`{ \"laptop\": \"MY-PC\" }`。亦可用环境变量 `DAO_ALIASES`（JSON）。"
-        }
+        "daoBridge.cloudflaredPath": { "type": "string", "default": "", "description": "cloudflared 路径（留空自动探测：插件内置 → ~/.dao/bin → PATH → 多镜像下载）" },
+        "daoBridge.cfApiToken": { "type": "string", "default": "", "description": "（可选）Cloudflare API Token" },
+        "daoBridge.tunnelToken": { "type": "string", "default": "", "description": "（可选）命名隧道 Token（cloudflared tunnel run --token）。填入即走用户固定域名通道；留空走零配置快速隧道。打不通会自动回退快速隧道。" },
+        "daoBridge.hostname": { "type": "string", "default": "", "description": "（命名隧道）公网主机名，如 dao.example.com" },
+        "daoBridge.localPort": { "type": "number", "default": 0, "description": "本地服务固定端口（0=随机）" },
+        "daoBridge.accessToken": { "type": "string", "default": "", "description": "（可选）额外访问 Token — 本地 Agent 可用此 Token 接入" },
+        "daoBridge.proxyUrl": { "type": "string", "default": "", "description": "（可选）出站代理，如 http://127.0.0.1:7890。留空时自动探测环境变量与常见本地代理端口。" },
+        "daoBridge.autoProxy": { "type": "boolean", "default": true, "description": "自动探测本机代理（clash/v2ray 常见端口）用于 cloudflared 出站，适配国内网络。" },
+        "daoBridge.relayUrl": { "type": "string", "default": "https://dao-relay-do.zhouyoukang.workers.dev", "description": "默认通道：Worker+DurableObject 出站中继端点。零 Cloudflare 账号、URL 天然稳定（*.workers.dev/relay/<session>）、纯出站适配一切平台。连不上才回退 cloudflared。" },
+        "daoBridge.session": { "type": "string", "default": "", "description": "（中继）会话名 = 公网路径 /relay/<session>。留空用主机名。" },
+        "daoBridge.disableRelay": { "type": "boolean", "default": false, "description": "关闭 Worker 中继默认通道，直接走 cloudflared。" },
+        "daoBridge.confineToWorkspace": { "type": "boolean", "default": false, "description": "将 /api/ls /api/read /api/write 限制在工作区根目录内（沙箱）。默认关闭=整机穿透：云端 Agent 可操作整台电脑，工作区只是其中一部分。" }
       }
     }
   },
@@ -129,10 +91,10 @@
     "agent",
     "powershell",
     "tunnel",
-    "nat-traversal",
     "dao",
+    "dao-bridge",
+    "cloudflare",
     "zero-config",
-    "zero-cost",
     "sandwich-architecture"
   ],
   "license": "MIT",
