@@ -1,10 +1,77 @@
 {
   "name": "agent-remote-repair",
+  "displayName": "DAO 远程中枢 · 三明治穿透",
   "version": "9.0.0",
   "description": "道 · 远程中枢 — 三明治架构: 操控端(云/本地 Agent) → 中枢(本插件+出站隧道) → 被控端(一行 PowerShell)。大道至简·零配置·零费用",
-  "main": "core.js",
+  "publisher": "dao",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
   "bin": {
     "dao": "dao.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhouyoukang1234-spec/agent-remote-repair"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "daoRemote.start",
+        "title": "DAO 远程中枢: 启动"
+      },
+      {
+        "command": "daoRemote.stop",
+        "title": "DAO 远程中枢: 停止"
+      },
+      {
+        "command": "daoRemote.restart",
+        "title": "DAO 远程中枢: 重启隧道"
+      },
+      {
+        "command": "daoRemote.copyBootstrap",
+        "title": "DAO 远程中枢: 复制被控端一行接入指令"
+      },
+      {
+        "command": "daoRemote.copyToken",
+        "title": "DAO 远程中枢: 复制中枢 Token"
+      },
+      {
+        "command": "daoRemote.showInfo",
+        "title": "DAO 远程中枢: 查看接入信息"
+      },
+      {
+        "command": "daoRemote.showAgents",
+        "title": "DAO 远程中枢: 查看在线被控端"
+      }
+    ],
+    "configuration": {
+      "title": "DAO 远程中枢",
+      "properties": {
+        "daoRemote.port": {
+          "type": "number",
+          "default": 3002,
+          "description": "中枢本地 HTTP 端口（被占用自动顺延）"
+        },
+        "daoRemote.lanOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "仅本地/局域网，不开公网隧道"
+        },
+        "daoRemote.relayUrl": {
+          "type": "string",
+          "default": "",
+          "description": "（可选）Worker+DO 中继端点；留空走 cloudflared 快速隧道"
+        }
+      }
+    }
   },
   "scripts": {
     "start": "node dao.js",

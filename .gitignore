@@ -43,3 +43,5 @@ web/windsurf_deployment.yaml
 bin/
 cloudflared.exe
 *.exe
+.vscode-test/
+*.vsix
