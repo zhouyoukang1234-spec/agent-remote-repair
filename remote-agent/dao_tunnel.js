@@ -325,9 +325,12 @@ function _startCloudflared(localPort, cfPath) {
   _tunnelMethod = "cloudflared";
   console.log("[tunnel:cloudflared] Starting quick tunnel → :" + localPort);
 
+  // 道法自然: 默认 http2 — 兼容封禁 UDP/QUIC 的网络(企业/校园/部分云)。
+  // 需要 quic 可设 DAO_CF_PROTOCOL=quic 覆盖。
+  var proto = process.env.DAO_CF_PROTOCOL || "http2";
   _tunnelProcess = spawn(
     cfPath,
-    ["tunnel", "--url", "http://localhost:" + localPort, "--no-autoupdate"],
+    ["tunnel", "--url", "http://localhost:" + localPort, "--no-autoupdate", "--protocol", proto],
     { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
   );
 
