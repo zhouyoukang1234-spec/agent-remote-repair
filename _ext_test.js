@@ -7,6 +7,7 @@
 "use strict";
 const path = require("path");
 const http = require("http");
+const fs = require("fs");
 const { execFile } = require("child_process");
 
 let pass = 0, fail = 0;
@@ -22,6 +23,8 @@ const infoMsgs = [];
 const clipboard = { _v: "" };
 const cfgStore = { port: 0, lanOnly: true, relayUrl: "" }; // lanOnly=true：测试不开公网隧道
 let lastPanel = null;
+let lastViewProvider = null;
+let lastView = null;
 const vscodeMock = {
   StatusBarAlignment: { Left: 1, Right: 2 },
   ViewColumn: { Active: -1, Beside: -2 },
@@ -42,6 +45,7 @@ const vscodeMock = {
       };
       return lastPanel;
     },
+    registerWebviewViewProvider: (id, provider) => { lastViewProvider = { id, provider }; return { dispose() {} }; },
   },
   workspace: {
     getConfiguration: () => ({ get: (k) => cfgStore[k] }),
@@ -84,10 +88,41 @@ function api(base, method, p, body, token) {
   const context = { subscriptions: subs };
 
   await ext.activate(context);
+
+  // activate 不再阻塞 startHub（UI 即使中枢卡住也先可见），故等中枢就绪
+  const connPath = path.join(require("os").homedir(), ".dao-remote", "conn.json");
+  async function waitReady(ms) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      try {
+        const c = JSON.parse(fs.readFileSync(connPath, "utf8"));
+        if ((await api("http://127.0.0.1:" + c.port, "GET", "/api/health").catch(() => ({ status: 0 }))).status === 200) return c;
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("hub not ready in time");
+  }
+  const conn = await waitReady(15000);
+
   ok("activate registers 8 commands", Object.keys(commands).length === 8 &&
     ["daoRemote.showPanel","daoRemote.start","daoRemote.stop","daoRemote.restart","daoRemote.copyBootstrap","daoRemote.copyToken","daoRemote.showInfo","daoRemote.showAgents"].every((c) => commands[c]));
   ok("activate creates a status bar item", !!statusItem && /DAO/.test(statusItem.text));
   ok("status bar opens 中枢状态台", statusItem.command === "daoRemote.showPanel");
+
+  // 侧边栏常驻视图：装好即可见的「前端」
+  ok("registers sidebar webview view provider", !!lastViewProvider && lastViewProvider.id === "daoRemote.statusView");
+  lastView = {
+    _posted: [], _msg: null,
+    webview: { options: {}, _html: "", set html(v) { this._html = v; }, get html() { return this._html; },
+      postMessage: async (m) => { lastView._posted.push(m); return true; },
+      onDidReceiveMessage: (fn) => { lastView._msg = fn; return { dispose() {} }; } },
+    onDidDispose() { return { dispose() {} }; },
+  };
+  lastViewProvider.provider.resolveWebviewView(lastView);
+  ok("sidebar view renders 中枢状态台 with copy button", /中枢状态台/.test(lastView.webview.html) && /copyBoot/.test(lastView.webview.html));
+  await lastView._msg({ type: "ready" });
+  const vpushed = lastView._posted[lastView._posted.length - 1];
+  ok("sidebar view receives live device state", !!vpushed && /\/api\/bootstrap\.ps1 \| iex/.test(vpushed.bootstrap));
 
   // 中枢状态台：面板渲染 + 实时推送 + 复制按钮回传
   await commands["daoRemote.showPanel"]();
@@ -99,7 +134,6 @@ function api(base, method, p, body, token) {
   ok("panel copy button copies one-liner", /irm .*\/api\/bootstrap\.ps1 \| iex/.test(clipboard._v));
 
   // 拿到扩展宿主里中枢的端口/token（经 conn.json 持久化，复用 dao.js 的核心）
-  const conn = require(path.join(require("os").homedir(), ".dao-remote", "conn.json"));
   const BASE = "http://127.0.0.1:" + conn.port;
   const TOKEN = conn.token;
 
