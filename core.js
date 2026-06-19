@@ -65,25 +65,55 @@ function runShell(cmd, cwd, timeoutMs) {
 function psq(s) {
   return "'" + String(s == null ? "" : s).replace(/'/g, "''") + "'";
 }
+// POSIX(/bin/sh) 单引号字面量转义（Linux/macOS 本机执行用）
+function shq(s) {
+  return "'" + String(s == null ? "" : s).replace(/'/g, "'\\''") + "'";
+}
+// 按平台生成 sysinfo 采集命令：Win→Get-ComputerInfo；Linux/macOS→uname/os-release/cpu/mem/disk
+function sysinfoCmd(platform) {
+  if ((platform || process.platform) === "win32") return "Get-ComputerInfo | Out-String";
+  return "echo '=== SYSTEM ==='; uname -a; echo; (lsb_release -a 2>/dev/null || cat /etc/os-release 2>/dev/null); " +
+    "echo; echo '=== CPU ==='; (lscpu 2>/dev/null | head -25 || sysctl -n machdep.cpu.brand_string 2>/dev/null); " +
+    "echo; echo '=== MEMORY ==='; (free -h 2>/dev/null || vm_stat 2>/dev/null); " +
+    "echo; echo '=== DISK ==='; df -h 2>/dev/null; echo; echo '=== UPTIME ==='; uptime 2>/dev/null";
+}
 
-// ── 把高层 exec 请求规范化为一条健壮的 PowerShell 表达式 ──
+// ── 把高层 exec 请求规范化为一条健壮的命令表达式 ──
 // 痛点根因：裸命令走 Invoke-Expression / powershell -Command 时，
 //   一个 .bat/.exe 文件路径（尤其含空格）会被当成「字符串字面量」而非「可执行」，
-//   于是远程根本跑不起来 .bat/.exe。这里统一用调用运算符 & + 单引号量化彻底规避。
+//   于是远程根本跑不起来 .bat/.exe。这里统一用调用运算符 + 单引号量化彻底规避。
+// targetPlatform: 缺省 'win32'(PowerShell) —— 被控端经 bootstrap 恒为 Windows；
+//   中枢本机(SELF)执行时按 process.platform 传入，linux/darwin 走 POSIX /bin/sh 规范化。
 // 支持的 type：
-//   shell(默认) — 原样 PowerShell（向后兼容）
-//   cmd/bat     — 经 cmd.exe /c 执行（chcp 65001 保证中文 UTF-8 回传），跑 .bat/经典 DOS
-//   run/file    — 运行一个文件（.bat/.cmd/.exe/.ps1…）+ args，& 调用运算符可直接执行带空格路径
-//   detached    — Start-Process 后台/分离启动（GUI 或长驻进程，不阻塞轮询），立即回 PID
+//   shell(默认) — 原样（向后兼容）
+//   cmd/bat     — Win: cmd.exe /c (chcp 65001); POSIX: 当普通 shell 命令
+//   run/file    — 运行一个文件（.bat/.cmd/.exe/.ps1/.sh…）+ args，带空格路径也安全
+//   detached    — 后台/分离启动（GUI 或长驻进程，不阻塞轮询），立即回 PID
 // 可选字段：cwd(工作目录)、args(数组)、elevate(管理员提权)、show(显示窗口)
-function buildExecCommand(body) {
+function buildExecCommand(body, targetPlatform) {
   body = body || {};
+  const posix = (targetPlatform || "win32") !== "win32";
   const type = String(body.type || "shell").toLowerCase();
-  const cwd = body.cwd ? "Set-Location -LiteralPath " + psq(body.cwd) + "; " : "";
   const file = body.file || body.exe || body.program || "";
   const args = Array.isArray(body.args) ? body.args : [];
   const cmd = body.cmd || body.command || (body.payload && body.payload.command) || "";
 
+  if (posix) {
+    const cwd = body.cwd ? "cd " + shq(body.cwd) + " && " : "";
+    if (type === "detached" || type === "spawn" || body.detached) {
+      const target = file ? shq(file) : cmd;
+      const al = args.length ? " " + args.map(shq).join(" ") : "";
+      return cwd + "nohup " + target + al + " >/dev/null 2>&1 & echo \"started pid=$! file=" + (file || cmd) + "\"";
+    }
+    if (type === "run" || type === "file" || (file && !cmd)) {
+      const al = args.length ? " " + args.map(shq).join(" ") : "";
+      const runner = /\.sh$/i.test(file) ? "sh " : "";
+      return cwd + runner + shq(file || cmd) + al + " 2>&1";
+    }
+    return cwd + cmd;
+  }
+
+  const cwd = body.cwd ? "Set-Location -LiteralPath " + psq(body.cwd) + "; " : "";
   if (type === "detached" || type === "spawn" || body.detached) {
     const target = file || cmd;
     const al = args.length ? " -ArgumentList " + args.map(psq).join(",") : "";
@@ -364,10 +394,10 @@ async function handleRoute(hub, route, method, headers, query, bodyRaw) {
     const type = String(body.type || "shell").toLowerCase();
     const timeoutMs = (Math.min(Number(body.timeout) || 60, 300)) * 1000;
 
-    // sysinfo：被控端原生采集；中枢本机直接 Get-ComputerInfo
+    // sysinfo：被控端原生采集；中枢本机按平台采集(Win: Get-ComputerInfo; POSIX: uname/os-release/cpu/mem/disk)
     if (type === "sysinfo") {
       if (hub.isSelf(body.agent_id)) {
-        const r = await runShell("Get-ComputerInfo | Out-String", body.cwd || hub.root, timeoutMs);
+        const r = await runShell(sysinfoCmd(process.platform), body.cwd || hub.root, timeoutMs);
         return sync ? { status: 200, body: { status: "completed", agent_id: hub.host, result: r } } : { status: 200, body: r };
       }
       const s = hub.queueCommand(body.agent_id, "sysinfo", {});
@@ -378,14 +408,14 @@ async function handleRoute(hub, route, method, headers, query, bodyRaw) {
       return { status: 200, body: { status: "completed", agent_id: s.agent.id, cmd_id: s.cmdId, result: sr } };
     }
 
-    // 其余一律规范化为健壮 PowerShell 表达式：.bat/.cmd/.exe/.ps1/后台进程皆可，
-    // 同一条命令既能在中枢本机执行，也能转发给被控端（经 IEX 执行 payload.command）。
-    const command = buildExecCommand(body);
+    // 中枢本机(SELF)按本机平台规范化(linux/darwin→POSIX, win→PowerShell)；被控端恒 PowerShell(Windows)。
     if (hub.isSelf(body.agent_id)) {
-      if (!command) return { status: 400, body: { error: "cmd/file required" } };
-      const r = await runShell(command, body.cwd || hub.root, timeoutMs);
+      const selfCmd = buildExecCommand(body, process.platform);
+      if (!selfCmd) return { status: 400, body: { error: "cmd/file required" } };
+      const r = await runShell(selfCmd, body.cwd || hub.root, timeoutMs);
       return sync ? { status: 200, body: { status: "completed", agent_id: hub.host, result: r } } : { status: 200, body: r };
     }
+    const command = buildExecCommand(body);
     const { cmdId, agent, err } = hub.queueCommand(body.agent_id, "shell", { command });
     if (err) return { status: 404, body: { error: err } };
     if (!sync) return { status: 200, body: { cmd_id: cmdId, agent_id: agent.id, type } };

@@ -140,6 +140,16 @@ function api(base, method, p, body, token) {
   ok("elevate adds -Verb RunAs", buildExecCommand({ type: "detached", file: "x.exe", elevate: true }).includes("-Verb RunAs"));
   ok("cwd prepends Set-Location", buildExecCommand({ cmd: "pwd", cwd: "C:\\tmp" }).startsWith("Set-Location -LiteralPath 'C:\\tmp';"));
 
+  // ── buildExecCommand POSIX 分支（Linux/macOS 本机；targetPlatform 非 win32）──
+  ok("posix shell passes through", buildExecCommand({ cmd: "uname -a" }, "linux") === "uname -a");
+  ok("posix cmd type degrades to shell (no cmd.exe)", buildExecCommand({ type: "cmd", cmd: "echo a && echo b" }, "linux") === "echo a && echo b");
+  const pRun = buildExecCommand({ type: "run", file: "/opt/my app.sh", args: ["x y", "1"] }, "linux");
+  ok("posix run .sh uses sh + single-quote args", pRun.startsWith("sh '/opt/my app.sh'") && pRun.includes("'x y'") && pRun.includes("'1'") && pRun.endsWith(" 2>&1"));
+  ok("posix run bare bin execs directly", buildExecCommand({ type: "run", file: "/usr/bin/node" }, "linux").startsWith("'/usr/bin/node'"));
+  const pDet = buildExecCommand({ type: "detached", cmd: "sleep 5" }, "linux");
+  ok("posix detached uses nohup + pid echo", pDet.startsWith("nohup sleep 5 ") && pDet.includes(">/dev/null 2>&1 &") && pDet.includes("started pid=$!"));
+  ok("posix cwd prepends cd &&", buildExecCommand({ cmd: "pwd", cwd: "/tmp/x y" }, "linux").startsWith("cd '/tmp/x y' && "));
+
   // 路由：操控端 type:run → 中枢 → 被控端，payload.command 携带 & 表达式
   const routedRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "TEST-PC", type: "run", file: "C:\\tool\\x.bat", args: ["a"], timeout: 10 }, TOKEN);
   ok("exec-sync run routes built &-expression to controlled-end", routedRun.status === 200 && routedRun.json.result.stdout.includes("& 'C:\\tool\\x.bat' 'a'"));
@@ -154,8 +164,18 @@ function api(base, method, p, body, token) {
     const cmdRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "cmd", cmd: "echo cmd-type-ok", timeout: 20 }, TOKEN);
     ok("SELF runs cmd type via cmd.exe", cmdRun.status === 200 && cmdRun.json.result.stdout.includes("cmd-type-ok"));
   } else {
-    ok("SELF real .bat (skipped: non-win)", true);
-    ok("SELF cmd type (skipped: non-win)", true);
+    // SELF 真机实跑（Linux/macOS）：.sh 运行 / cmd 降级 shell / detached / sysinfo
+    const shPath = path.join(os.tmpdir(), "dao_selftest_" + Date.now() + ".sh");
+    fs.writeFileSync(shPath, "#!/bin/sh\necho dao-sh-ran $1\nexit 3\n");
+    const shRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "run", file: shPath, args: ["TOKEN42"], timeout: 25 }, TOKEN);
+    ok("SELF runs a real .sh via type:run (stdout + native exit code)", shRun.status === 200 && shRun.json.result.stdout.includes("dao-sh-ran TOKEN42") && shRun.json.result.exit_code === 3);
+    try { fs.unlinkSync(shPath); } catch {}
+    const cmdRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "cmd", cmd: "echo cmd-type-ok && echo two", timeout: 20 }, TOKEN);
+    ok("SELF runs cmd type via /bin/sh", cmdRun.status === 200 && cmdRun.json.result.stdout.includes("cmd-type-ok") && cmdRun.json.result.stdout.includes("two"));
+    const detRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "detached", cmd: "sleep 1", timeout: 20 }, TOKEN);
+    ok("SELF detached via nohup returns pid", detRun.status === 200 && detRun.json.result.stdout.includes("started pid="));
+    const siRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "sysinfo", timeout: 25 }, TOKEN);
+    ok("SELF sysinfo via uname/os-release", siRun.status === 200 && siRun.json.result.stdout.includes("=== SYSTEM ==="));
   }
 
   running = false;
