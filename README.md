@@ -1,5 +1,9 @@
 # 道 · 远程中枢 (Agent Remote Repair) v9
 
+[![CI](https://github.com/zhouyoukang1234-spec/agent-remote-repair/actions/workflows/ci.yml/badge.svg)](https://github.com/zhouyoukang1234-spec/agent-remote-repair/actions/workflows/ci.yml)
+[![Release](https://github.com/zhouyoukang1234-spec/agent-remote-repair/actions/workflows/release.yml/badge.svg)](https://github.com/zhouyoukang1234-spec/agent-remote-repair/actions/workflows/release.yml)
+[![latest](https://img.shields.io/github/v/release/zhouyoukang1234-spec/agent-remote-repair?sort=semver)](https://github.com/zhouyoukang1234-spec/agent-remote-repair/releases)
+
 > 反者道之动 · 大道至简 · 零成本 · 零配置 · 零注册
 >
 > 以内网穿透 **dao-bridge** 插件核心为本源，延伸出**三明治架构**：
