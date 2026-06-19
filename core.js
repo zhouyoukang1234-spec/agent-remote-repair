@@ -61,6 +61,47 @@ function runShell(cmd, cwd, timeoutMs) {
   });
 }
 
+// PowerShell 单引号字面量转义（路径/参数含空格或引号也安全）
+function psq(s) {
+  return "'" + String(s == null ? "" : s).replace(/'/g, "''") + "'";
+}
+
+// ── 把高层 exec 请求规范化为一条健壮的 PowerShell 表达式 ──
+// 痛点根因：裸命令走 Invoke-Expression / powershell -Command 时，
+//   一个 .bat/.exe 文件路径（尤其含空格）会被当成「字符串字面量」而非「可执行」，
+//   于是远程根本跑不起来 .bat/.exe。这里统一用调用运算符 & + 单引号量化彻底规避。
+// 支持的 type：
+//   shell(默认) — 原样 PowerShell（向后兼容）
+//   cmd/bat     — 经 cmd.exe /c 执行（chcp 65001 保证中文 UTF-8 回传），跑 .bat/经典 DOS
+//   run/file    — 运行一个文件（.bat/.cmd/.exe/.ps1…）+ args，& 调用运算符可直接执行带空格路径
+//   detached    — Start-Process 后台/分离启动（GUI 或长驻进程，不阻塞轮询），立即回 PID
+// 可选字段：cwd(工作目录)、args(数组)、elevate(管理员提权)、show(显示窗口)
+function buildExecCommand(body) {
+  body = body || {};
+  const type = String(body.type || "shell").toLowerCase();
+  const cwd = body.cwd ? "Set-Location -LiteralPath " + psq(body.cwd) + "; " : "";
+  const file = body.file || body.exe || body.program || "";
+  const args = Array.isArray(body.args) ? body.args : [];
+  const cmd = body.cmd || body.command || (body.payload && body.payload.command) || "";
+
+  if (type === "detached" || type === "spawn" || body.detached) {
+    const target = file || cmd;
+    const al = args.length ? " -ArgumentList " + args.map(psq).join(",") : "";
+    const win = body.show ? "" : " -WindowStyle Hidden";
+    const verb = body.elevate ? " -Verb RunAs" : "";
+    return cwd + "$p=Start-Process -FilePath " + psq(target) + al + win + verb +
+      " -PassThru; 'started pid=' + $p.Id + ' file=' + " + psq(target);
+  }
+  if (type === "run" || type === "file" || (file && !cmd)) {
+    const al = args.length ? " " + args.map(psq).join(" ") : "";
+    return cwd + "& " + psq(file || cmd) + al + " 2>&1 | Out-String";
+  }
+  if (type === "cmd" || type === "bat" || type === "batch") {
+    return cwd + "& cmd.exe /d /c " + psq("chcp 65001>nul & " + cmd) + " 2>&1 | Out-String";
+  }
+  return cwd + cmd;
+}
+
 function bearer(headers) {
   const h = headers["authorization"] || headers["Authorization"] || "";
   return h.startsWith("Bearer ") ? h.slice(7) : "";
@@ -320,19 +361,32 @@ async function handleRoute(hub, route, method, headers, query, bodyRaw) {
   // 命令执行 — 按 agent_id 路由：self → 本机；否则 → 入队转发被控端
   if ((route === "/api/exec" || route === "/api/exec-sync") && method === "POST") {
     const sync = route === "/api/exec-sync";
-    const cmd = body.cmd || body.command || (body.payload && body.payload.command) || "";
-    const type = body.type || "shell";
+    const type = String(body.type || "shell").toLowerCase();
     const timeoutMs = (Math.min(Number(body.timeout) || 60, 300)) * 1000;
 
+    // sysinfo：被控端原生采集；中枢本机直接 Get-ComputerInfo
+    if (type === "sysinfo") {
+      if (hub.isSelf(body.agent_id)) {
+        const r = await runShell("Get-ComputerInfo | Out-String", body.cwd || hub.root, timeoutMs);
+        return sync ? { status: 200, body: { status: "completed", agent_id: hub.host, result: r } } : { status: 200, body: r };
+      }
+      const s = hub.queueCommand(body.agent_id, "sysinfo", {});
+      if (s.err) return { status: 404, body: { error: s.err } };
+      if (!sync) return { status: 200, body: { cmd_id: s.cmdId, agent_id: s.agent.id, type } };
+      const sr = await hub.waitResult(s.agent, s.cmdId, timeoutMs);
+      if (!sr) return { status: 504, body: { status: "timeout", agent_id: s.agent.id, cmd_id: s.cmdId } };
+      return { status: 200, body: { status: "completed", agent_id: s.agent.id, cmd_id: s.cmdId, result: sr } };
+    }
+
+    // 其余一律规范化为健壮 PowerShell 表达式：.bat/.cmd/.exe/.ps1/后台进程皆可，
+    // 同一条命令既能在中枢本机执行，也能转发给被控端（经 IEX 执行 payload.command）。
+    const command = buildExecCommand(body);
     if (hub.isSelf(body.agent_id)) {
-      // 中枢自己这一台（保持 dao-bridge 本源行为）
-      if (!cmd) return { status: 400, body: { error: "cmd required" } };
-      const r = await runShell(cmd, body.cwd || hub.root, timeoutMs);
+      if (!command) return { status: 400, body: { error: "cmd/file required" } };
+      const r = await runShell(command, body.cwd || hub.root, timeoutMs);
       return sync ? { status: 200, body: { status: "completed", agent_id: hub.host, result: r } } : { status: 200, body: r };
     }
-    // 转发给被控端
-    const payload = type === "shell" ? { command: cmd } : body.payload || {};
-    const { cmdId, agent, err } = hub.queueCommand(body.agent_id, type, payload);
+    const { cmdId, agent, err } = hub.queueCommand(body.agent_id, "shell", { command });
     if (err) return { status: 404, body: { error: err } };
     if (!sync) return { status: 200, body: { cmd_id: cmdId, agent_id: agent.id, type } };
     const result = await hub.waitResult(agent, cmdId, timeoutMs);
@@ -341,12 +395,10 @@ async function handleRoute(hub, route, method, headers, query, bodyRaw) {
   }
 
   if (route === "/api/broadcast" && method === "POST") {
-    const cmd = body.cmd || body.command || "";
-    const type = body.type || "shell";
-    const payload = type === "shell" ? { command: cmd } : body.payload || {};
+    const command = buildExecCommand(body);
     const delivered = [];
     for (const [id] of hub.agents) {
-      const { cmdId } = hub.queueCommand(id, type, payload);
+      const { cmdId } = hub.queueCommand(id, "shell", { command });
       if (cmdId) delivered.push({ agent_id: id, cmd_id: cmdId });
     }
     return { status: 200, body: { ok: true, delivered } };
@@ -397,7 +449,7 @@ try{ $OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8 }catch{}   
 $U='${hubUrl}'
 # 以 UTF-8 字节体 POST：PS5.1 默认按 ANSI 编码字符串体 → 非 ASCII 乱码且可能令中枢 JSON.parse 失败丢结果
 function Dao-Post($path,$obj){ $b=[Text.Encoding]::UTF8.GetBytes(($obj|ConvertTo-Json -Depth 8 -Compress)); return irm "$U$path" -Method POST -Body $b -ContentType 'application/json; charset=utf-8' -TimeoutSec 30 }
-$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell') }
+$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell','cmd','run','detached') }
 try { $reg = Dao-Post '/api/connect' @{sysinfo=$sys} } catch { Write-Host "[dao] connect failed: $($_.Exception.Message)" -ForegroundColor Red; return }
 $aid=$reg.agent_id; $tok=$reg.token
 Write-Host "[dao] 已接入中枢 as $aid  (Ctrl+C 退出)" -ForegroundColor Green
@@ -487,8 +539,9 @@ ${table}
 | 方法 | 路径 | Body | 说明 |
 |---|---|---|---|
 | GET  | /api/agents | - | 在线设备列表（先看再下发）|
-| POST | /api/exec-sync | {agent_id,cmd,timeout} | 同步执行（agent_id 空=中枢本机）|
-| POST | /api/exec | {agent_id,cmd} | 异步下发，返回 cmd_id |
+| POST | /api/exec-sync | {agent_id,type,cmd,file,args,cwd,timeout} | 同步执行（agent_id 空=中枢本机）|
+| POST | /api/exec | {agent_id,type,cmd,file,args} | 异步下发，返回 cmd_id |
+| | | type: shell(默认PS) / cmd(cmd.exe跑.bat) / run(跑文件.bat/.exe/.ps1+args) / detached(后台GUI回PID) | 跑文件例 {type:'run',file:'C:\\a\\b.bat',args:['x']} |
 | POST | /api/broadcast | {cmd} | 广播到所有被控端 |
 | GET  | /api/bootstrap.ps1 | - | 被控端一行接入脚本（免鉴权）|
 
@@ -652,4 +705,4 @@ function connectRelay(hub, opts) {
   };
 }
 
-module.exports = { Hub, handleRoute, startServer, connectRelay, buildBootstrap, buildCloudDoc, runShell, findAvailablePort };
+module.exports = { Hub, handleRoute, startServer, connectRelay, buildBootstrap, buildCloudDoc, runShell, buildExecCommand, findAvailablePort };

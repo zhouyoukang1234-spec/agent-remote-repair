@@ -4,7 +4,10 @@
 // ═══════════════════════════════════════════════════════════
 "use strict";
 const http = require("http");
-const { Hub, startServer, buildBootstrap, buildCloudDoc } = require("./core");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { Hub, startServer, buildBootstrap, buildCloudDoc, buildExecCommand } = require("./core");
 
 let pass = 0;
 let fail = 0;
@@ -123,6 +126,37 @@ function api(base, method, p, body, token) {
   const boot = await api(BASE, "GET", "/api/bootstrap.ps1");
   ok("bootstrap.ps1 served, embeds connect+poll loop", boot.status === 200 && boot.raw.includes("/api/connect") && boot.raw.includes("/api/poll"));
   ok("buildBootstrap embeds the hub url", buildBootstrap("https://example.test").includes("https://example.test"));
+  ok("bootstrap advertises richer capabilities (cmd/run/detached)", boot.raw.includes("'shell','cmd','run','detached'"));
+
+  // ── buildExecCommand 规范化：.bat/.cmd/.exe/任意操作的根本修复 ──
+  ok("shell type passes command through (back-compat)", buildExecCommand({ cmd: "Get-Date" }) === "Get-Date");
+  const runExpr = buildExecCommand({ type: "run", file: "C:\\to ol\\my app.bat", args: ["x y", "1"] });
+  ok("run type uses & call-operator + quotes path/args (bat fix)", runExpr.startsWith("& 'C:\\to ol\\my app.bat'") && runExpr.includes("'x y'") && runExpr.includes("'1'"));
+  ok("bare file (no type) is treated as run", buildExecCommand({ file: "C:\\a\\b.exe" }).startsWith("& 'C:\\a\\b.exe'"));
+  const cmdExpr = buildExecCommand({ type: "cmd", cmd: "dir & echo hi" });
+  ok("cmd type runs via cmd.exe /c with chcp 65001 (UTF-8)", cmdExpr.includes("cmd.exe /d /c") && cmdExpr.includes("chcp 65001>nul & dir & echo hi"));
+  const detExpr = buildExecCommand({ type: "detached", file: "notepad.exe" });
+  ok("detached type uses Start-Process -PassThru (non-blocking)", detExpr.includes("Start-Process -FilePath 'notepad.exe'") && detExpr.includes("-PassThru") && detExpr.includes("-WindowStyle Hidden"));
+  ok("elevate adds -Verb RunAs", buildExecCommand({ type: "detached", file: "x.exe", elevate: true }).includes("-Verb RunAs"));
+  ok("cwd prepends Set-Location", buildExecCommand({ cmd: "pwd", cwd: "C:\\tmp" }).startsWith("Set-Location -LiteralPath 'C:\\tmp';"));
+
+  // 路由：操控端 type:run → 中枢 → 被控端，payload.command 携带 & 表达式
+  const routedRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "TEST-PC", type: "run", file: "C:\\tool\\x.bat", args: ["a"], timeout: 10 }, TOKEN);
+  ok("exec-sync run routes built &-expression to controlled-end", routedRun.status === 200 && routedRun.json.result.stdout.includes("& 'C:\\tool\\x.bat' 'a'"));
+
+  // SELF 真机实跑（仅 Windows）：真实 .bat 与 cmd 类型在中枢本机执行
+  if (process.platform === "win32") {
+    const batPath = path.join(os.tmpdir(), "dao_selftest_" + Date.now() + ".bat");
+    fs.writeFileSync(batPath, "@echo off\r\necho dao-bat-ran %1\r\nexit /b 3\r\n");
+    const batRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "run", file: batPath, args: ["TOKEN42"], timeout: 25 }, TOKEN);
+    ok("SELF runs a real .bat via type:run (stdout + native exit code)", batRun.status === 200 && batRun.json.result.stdout.includes("dao-bat-ran TOKEN42") && batRun.json.result.exit_code === 3);
+    try { fs.unlinkSync(batPath); } catch {}
+    const cmdRun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "", type: "cmd", cmd: "echo cmd-type-ok", timeout: 20 }, TOKEN);
+    ok("SELF runs cmd type via cmd.exe", cmdRun.status === 200 && cmdRun.json.result.stdout.includes("cmd-type-ok"));
+  } else {
+    ok("SELF real .bat (skipped: non-win)", true);
+    ok("SELF cmd type (skipped: non-win)", true);
+  }
 
   running = false;
   srv.close();

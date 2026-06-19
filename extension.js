@@ -19,8 +19,38 @@ const cp = require("child_process");
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const TRY_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 const BRIDGE_VERSION = "3.4.0";
-// 默认中继(Worker+DurableObject)端点 — 零账号穿透的公共入口, 可被 daoBridge.relayUrl 覆盖。
+// 默认中继(Worker+DurableObject)端点 — 零账号穿透的公共入口, 可被 daoBridgeHub.relayUrl 覆盖。
 const DEFAULT_RELAY_URL = "https://dao-relay-do.zhouyoukang.workers.dev";
+
+// ── 唯一命名空间 · 从根本上规避与遗留插件(dao-bridge / daoRemote)的标识冲突 ──
+// 视图/命令/配置全部归于 daoBridgeHub.*; 两插件并存也永不抢注同一 id, webview 必能挂上消息处理器。
+const NS = "daoBridgeHub";              // 当前唯一命名空间
+const NS_LEGACY = ["daoBridge", "daoRemote"]; // 历史命名空间(仅做配置回退, 不再贡献)
+// 读取配置: 用户在新命名空间的显式设置优先, 否则回退历史命名空间的显式设置, 最后用新命名空间默认值。
+function daoCfg() {
+  function userVal(ns, key) {
+    try {
+      const ins = vscode.workspace.getConfiguration(ns).inspect(key);
+      if (!ins) return undefined;
+      const v = ins.workspaceFolderValue;
+      if (v !== undefined) return v;
+      if (ins.workspaceValue !== undefined) return ins.workspaceValue;
+      if (ins.globalValue !== undefined) return ins.globalValue;
+      return undefined;
+    } catch (e) { return undefined; }
+  }
+  return {
+    get(key) {
+      const u = userVal(NS, key);
+      if (u !== undefined) return u;
+      for (const lns of NS_LEGACY) {
+        const lv = userVal(lns, key);
+        if (lv !== undefined) return lv;
+      }
+      try { return vscode.workspace.getConfiguration(NS).get(key); } catch (e) { return undefined; }
+    }
+  };
+}
 
 function daoDir() {
   const d = path.join(os.homedir(), ".dao", "bridge");
@@ -59,7 +89,7 @@ function probeLocalProxy() {
 let _proxyCache = null;
 function detectProxy() {
   if (_proxyCache !== null) return _proxyCache;
-  const cfg = vscode.workspace.getConfiguration("daoBridge");
+  const cfg = daoCfg();
   const explicit = String(cfg.get("proxyUrl") || "").trim();
   const autoProbe = cfg.get("autoProxy") !== false; // 默认开启
   let proxy = explicit
@@ -157,7 +187,7 @@ function extractCfTgz(tgzPath, outBin) {
   return "";
 }
 function cloudflaredCandidates(ctx) {
-  const cfgPath = vscode.workspace.getConfiguration("daoBridge").get("cloudflaredPath") || "";
+  const cfgPath = daoCfg().get("cloudflaredPath") || "";
   const home = os.homedir();
   const appdata = process.env.APPDATA || path.join(home, "AppData", "Roaming");
   return [
@@ -613,6 +643,43 @@ async function verifyCfToken(token) {
 // 中枢本机（SELF）执行任意命令 — 与 bootstrap 被控端同源语义：
 //   ① 强制 UTF-8 输出（否则 powershell 默认 OEM 码页，中文输出全成 "?"）
 //   ② 退出码透传（powershell -Command 默认只返 0/1，吞原生退出码）
+// PowerShell 单引号字面量转义（路径/参数含空格或引号也安全）
+function psq(s) {
+  return "'" + String(s == null ? "" : s).replace(/'/g, "''") + "'";
+}
+
+// ── 把高层 exec 请求规范化为一条健壮的 PowerShell 表达式 ──
+// 痛点根因：裸命令走 Invoke-Expression / powershell -Command 时，一个 .bat/.exe
+//   文件路径（尤其含空格）会被当成「字符串字面量」而非「可执行」，于是远程跑不起 .bat/.exe。
+//   这里统一用调用运算符 & + 单引号量化彻底规避；同一条命令中枢本机与被控端皆可执行。
+// type：shell(默认/原样) | cmd|bat(经 cmd.exe /c+chcp 65001) | run|file(运行文件+args)
+//        | detached|spawn(Start-Process 后台/分离，立即回 PID)；可选 cwd/args/elevate/show
+function buildExecCommand(body) {
+  body = body || {};
+  const type = String(body.type || "shell").toLowerCase();
+  const cwd = body.cwd ? "Set-Location -LiteralPath " + psq(body.cwd) + "; " : "";
+  const file = body.file || body.exe || body.program || "";
+  const args = Array.isArray(body.args) ? body.args : [];
+  const cmd = body.cmd || body.command || (body.payload && body.payload.command) || "";
+
+  if (type === "detached" || type === "spawn" || body.detached) {
+    const target = file || cmd;
+    const al = args.length ? " -ArgumentList " + args.map(psq).join(",") : "";
+    const win = body.show ? "" : " -WindowStyle Hidden";
+    const verb = body.elevate ? " -Verb RunAs" : "";
+    return cwd + "$p=Start-Process -FilePath " + psq(target) + al + win + verb +
+      " -PassThru; 'started pid=' + $p.Id + ' file=' + " + psq(target);
+  }
+  if (type === "run" || type === "file" || (file && !cmd)) {
+    const al = args.length ? " " + args.map(psq).join(" ") : "";
+    return cwd + "& " + psq(file || cmd) + al + " 2>&1 | Out-String";
+  }
+  if (type === "cmd" || type === "bat" || type === "batch") {
+    return cwd + "& cmd.exe /d /c " + psq("chcp 65001>nul & " + cmd) + " 2>&1 | Out-String";
+  }
+  return cwd + cmd;
+}
+
 function wrapPwshForUtf8AndExit(cmd) {
   return (
     "$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8\n" +
@@ -645,7 +712,7 @@ $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue
 try{ $OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8 }catch{}
 $U='${hubUrl}'
 function Dao-Post($path,$obj){ $b=[Text.Encoding]::UTF8.GetBytes(($obj|ConvertTo-Json -Depth 8 -Compress)); return irm "$U$path" -Method POST -Body $b -ContentType 'application/json; charset=utf-8' -TimeoutSec 35 }
-$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell') }
+$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell','cmd','run','detached') }
 try { $reg = Dao-Post '/api/connect' @{sysinfo=$sys} } catch { Write-Host "[dao] connect failed: $($_.Exception.Message)" -ForegroundColor Red; return }
 $aid=$reg.agent_id; $tok=$reg.token
 Write-Host "[dao] 已接入中枢 as $aid  (Ctrl+C 退出)" -ForegroundColor Green
@@ -874,16 +941,16 @@ class WorkspaceServer {
 
   authToken(h) {
     if (h === "Bearer " + this.token) return true;
-    const cfgToken = vscode.workspace.getConfiguration("daoBridge").get("accessToken") || "";
+    const cfgToken = daoCfg().get("accessToken") || "";
     if (cfgToken && h === "Bearer " + cfgToken) return true;
     return false;
   }
 
   // 解析目标路径 — 帛书·「整个电脑的穿透·工作区只是文本的一部分」
   // 默认整机: 绝对路径原样, 相对路径相对工作区根 → 云端 Agent 能操作全机。
-  // 仅当用户显式开 daoBridge.confineToWorkspace 才沙箱在工作区内(越界返回 null)。
+  // 仅当用户显式开 daoBridgeHub.confineToWorkspace 才沙箱在工作区内(越界返回 null)。
   resolveTarget(root, p, fallback) {
-    const confine = vscode.workspace.getConfiguration("daoBridge").get("confineToWorkspace") === true;
+    const confine = daoCfg().get("confineToWorkspace") === true;
     const raw = (p == null || p === "") ? (fallback || "") : p;
     if (confine) return withinRoot(root, raw);
     if (!raw) return root;
@@ -898,7 +965,7 @@ class WorkspaceServer {
     const wsInfo = workspaceInfo();
     const root = wsInfo.root;
     const br = this._bridgeRef;
-    const escapeErr = { status: 403, body: { error: "path escapes workspace root (daoBridge.confineToWorkspace)" } };
+    const escapeErr = { status: 403, body: { error: "path escapes workspace root (daoBridgeHub.confineToWorkspace)" } };
 
     if (pathname === "/api/health") {
       return { status: 200, body: {
@@ -967,15 +1034,29 @@ class WorkspaceServer {
     // 命令执行 — 按 agent_id 路由：SELF(中枢本机) → 本机执行(本源行为·UTF-8+退出码)；否则 → 转发被控端
     if ((pathname === "/api/exec" || pathname === "/api/exec-sync") && method === "POST") {
       const sync = pathname === "/api/exec-sync";
-      const cmd = j.cmd || j.command || (j.payload && j.payload.command) || "";
-      const type = j.type || "shell";
+      const type = String(j.type || "shell").toLowerCase();
       const timeoutMs = Math.min(Number(j.timeout) || 60, 300) * 1000;
+      // sysinfo：被控端原生采集；中枢本机直接跑 Get-ComputerInfo
+      if (type === "sysinfo") {
+        if (this.isSelf(j.agent_id)) {
+          const r = await runSelf("Get-ComputerInfo | Out-String", j.cwd || root, timeoutMs);
+          return sync ? { status: 200, body: { status: "completed", agent_id: wsInfo.host, result: r } } : { status: 200, body: r };
+        }
+        const s = this.queueCommand(j.agent_id, "sysinfo", {});
+        if (s.err) return { status: 404, body: { error: s.err } };
+        if (!sync) return { status: 200, body: { cmd_id: s.cmdId, agent_id: s.agent.id, type } };
+        const sr = await this.waitResult(s.agent, s.cmdId, timeoutMs);
+        if (!sr) return { status: 504, body: { status: "timeout", agent_id: s.agent.id, cmd_id: s.cmdId } };
+        return { status: 200, body: { status: "completed", agent_id: s.agent.id, cmd_id: s.cmdId, result: sr } };
+      }
+      // 其余规范化为健壮 PowerShell 表达式：.bat/.cmd/.exe/.ps1/后台进程皆可
+      const command = buildExecCommand(j);
       if (this.isSelf(j.agent_id)) {
-        const r = await runSelf(cmd, j.cwd || root, timeoutMs);
+        if (!command) return { status: 400, body: { error: "cmd/file required" } };
+        const r = await runSelf(command, j.cwd || root, timeoutMs);
         return sync ? { status: 200, body: { status: "completed", agent_id: wsInfo.host, result: r } } : { status: 200, body: r };
       }
-      const payload = type === "shell" ? { command: cmd } : (j.payload || {});
-      const qd = this.queueCommand(j.agent_id, type, payload);
+      const qd = this.queueCommand(j.agent_id, "shell", { command });
       if (qd.err) return { status: 404, body: { error: qd.err } };
       if (!sync) return { status: 200, body: { cmd_id: qd.cmdId, agent_id: qd.agent.id, type } };
       const result = await this.waitResult(qd.agent, qd.cmdId, timeoutMs);
@@ -1017,18 +1098,16 @@ class WorkspaceServer {
       return { status: 200, body: { ok: true } };
     }
     if (pathname === "/api/broadcast" && method === "POST") {
-      const cmd = j.cmd || j.command || "";
-      const type = j.type || "shell";
-      const payload = type === "shell" ? { command: cmd } : (j.payload || {});
+      const command = buildExecCommand(j);
       const delivered = [];
       for (const [id] of this.agentRegistry) {
-        const qd = this.queueCommand(id, type, payload);
+        const qd = this.queueCommand(id, "shell", { command });
         if (qd.cmdId) delivered.push({ agent_id: id, cmd_id: qd.cmdId });
       }
       return { status: 200, body: { ok: true, delivered } };
     }
     if (pathname === "/api/config" && method === "GET") {
-      const cfg = vscode.workspace.getConfiguration("daoBridge");
+      const cfg = daoCfg();
       return { status: 200, body: {
         tunnelToken: cfg.get("tunnelToken") || "", hostname: cfg.get("hostname") || "",
         localPort: cfg.get("localPort") || 0, cloudflaredPath: cfg.get("cloudflaredPath") || "",
@@ -1037,7 +1116,7 @@ class WorkspaceServer {
       } };
     }
     if (pathname === "/api/config" && method === "POST") {
-      const cfg = vscode.workspace.getConfiguration("daoBridge");
+      const cfg = daoCfg();
       try {
         for (const k of ["tunnelToken", "hostname", "localPort", "cloudflaredPath", "relayUrl", "session"])
           if (j[k] !== undefined) await cfg.update(k, j[k], true);
@@ -1128,7 +1207,7 @@ class Bridge {
     try {
       this.startedAt = new Date();
       this.url = ""; this.lastErr = ""; this.attemptLog = [];
-      const cfg = vscode.workspace.getConfiguration("daoBridge");
+      const cfg = daoCfg();
       let tunnelToken = String(cfg.get("tunnelToken") || "").trim();
       let hostname = String(cfg.get("hostname") || "").trim();
       // 守母: IDE 设置为空时自动从 ~/.dao 凭证库取命名隧道配置 — 零设置项介入
@@ -1351,7 +1430,7 @@ class Bridge {
     } catch (e) {}
     // ④ IDE 设置项清空(全局)
     try {
-      const cfg = vscode.workspace.getConfiguration("daoBridge");
+      const cfg = daoCfg();
       for (const k of ["tunnelToken", "hostname", "cfApiToken"]) {
         try { await cfg.update(k, "", vscode.ConfigurationTarget.Global); } catch (e) {}
       }
@@ -1448,8 +1527,9 @@ class Bridge {
       "| GET | `/api/info` | - | 工作区信息 |",
       "| GET | `/api/agents` | - | 在线Agent列表 |",
       "| GET | `/api/bridge-state` | - | 隧道状态 |",
-      "| POST | `/api/exec` | `{agent_id,cmd,timeout}` | 执行命令（agent_id 空=中枢本机；填主机名=被控端·异步返回 cmd_id）|",
-      "| POST | `/api/exec-sync` | `{agent_id,cmd,timeout}` | 同步执行（agent_id 空=中枢本机；填主机名=路由到被控端）|",
+      "| POST | `/api/exec` | `{agent_id,type,cmd,file,args,cwd,timeout}` | 执行命令（agent_id 空=中枢本机；填主机名=被控端·异步返回 cmd_id）|",
+      "| POST | `/api/exec-sync` | `{agent_id,type,cmd,file,args,cwd,timeout}` | 同步执行（agent_id 空=中枢本机；填主机名=路由到被控端）|",
+      "| | | `type`: `shell`(默认PS) / `cmd`(cmd.exe跑.bat) / `run`(跑文件.bat/.exe/.ps1+args) / `detached`(后台启动GUI回PID) | 例 `{type:'run',file:'C:\\\\a\\\\b.bat',args:['x']}` |",
       "| GET | `/api/bootstrap.ps1` | - | 被控端一行接入脚本（免鉴权）|",
       "| POST | `/api/ls` | `{path}` | 列目录 |",
       "| POST | `/api/read` | `{path}` | 读文件 |",
@@ -1541,7 +1621,7 @@ class Bridge {
       "| POST | `/api/config` | `{tunnelToken,hostname,localPort,cloudflaredPath}` | 写配置 |",
       "| POST | `/api/agent/register` | `{agent_id,hostname,capabilities}` | Agent注册 |",
       "| POST | `/api/agent/heartbeat` | `{agent_id}` | Agent心跳 |",
-      "| POST | `/api/exec` / `/api/exec-sync` | `{cmd,cwd,timeout}` | 执行命令(底层万能入口) |",
+      "| POST | `/api/exec` / `/api/exec-sync` | `{type,cmd,file,args,cwd,timeout}` | 执行命令(底层万能入口·type:shell/cmd/run/detached·run跑.bat/.exe/.ps1) |",
       "| POST | `/api/ls` / `/api/read` / `/api/write` | `{path,content}` | 工作区内文件操作 |",
       "| POST | `/api/broadcast` | `{type,payload}` | 广播到在线Agent |",
       "| GET | `/api/export-cloud-md` / `/api/export-local-md` | - | 导出接入文档 |",
@@ -1749,7 +1829,12 @@ class BridgeViewProvider {
   notify() { this.post({ type: "state", state: this.bridge.state() }); }
 
   html() {
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    const nonce = crypto.randomBytes(16).toString("hex");
+    // 脚本严格走 nonce(防 XSS); 样式放行 inline(无安全风险, 保留大量内联 style 布局)。
+    const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-" + nonce + "';";
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--vscode-font-family);font-size:12px;padding:8px;color:var(--vscode-foreground);overflow-y:auto}
 h3{margin:10px 0 4px;font-size:12px;color:var(--vscode-textLink-foreground)}
@@ -1779,12 +1864,12 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--vscode-textCodeBl
   <div class="lbl">代理 / 回退链</div><div id="net" class="val">—</div>
   <div class="lbl">在线Agent</div><div id="agents" class="val">0</div>
   <div class="row" style="margin-top:6px">
-    <button onclick="send('copyUrl')">复制URL</button>
-    <button onclick="send('copyToken')">复制Token</button>
-    <button onclick="send('restart')">重启隧道</button>
+    <button data-op="copyUrl">复制URL</button>
+    <button data-op="copyToken">复制Token</button>
+    <button data-op="restart">重启隧道</button>
   </div>
   <div class="row" style="margin-top:4px">
-    <button onclick="send('refreshToken')" title="生成全新 Token，旧 Token 立即作废，并用新 Token 重连公网通道">🔄 刷新Token</button>
+    <button data-op="refreshToken" title="生成全新 Token，旧 Token 立即作废，并用新 Token 重连公网通道">🔄 刷新Token</button>
   </div>
 </div>
 
@@ -1792,8 +1877,8 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--vscode-textCodeBl
 <div class="section">
 <h3>📡 在线设备 · 汇入中枢</h3>
 <div class="muted">任意公网 Windows 跑这一行即接入本中枢，操控端填其 <code>agent_id</code> 即可全方位操控：</div>
-<pre id="boot" class="url" style="cursor:pointer" title="点击复制接入指令">…</pre>
-<button onclick="send('copyBootstrap')">📋 复制被控端一行接入指令</button>
+<pre id="boot" class="url" data-op="copyBootstrap" style="cursor:pointer" title="点击复制接入指令">…</pre>
+<button data-op="copyBootstrap">📋 复制被控端一行接入指令</button>
 <div id="devs" style="margin-top:6px"></div>
 </div>
 
@@ -1805,42 +1890,50 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--vscode-textCodeBl
 <div id="cfLoginForm">
   <input id="cfEmail" type="email" placeholder="CloudFlare Email（可选）">
   <input id="cfKey" type="password" placeholder="Tunnel Token / API Token（可选）">
-  <button onclick="send('cfLogin',null,{email:v('cfEmail'),key:v('cfKey')})">保存并切到用户通道</button>
+  <button data-op="cfLogin">保存并切到用户通道</button>
   <div class="muted" style="margin-top:6px">没有 token？用浏览器登录 Cloudflare（<b>可用 GitHub 账号</b>，需自有域名才有固定域名）：</div>
-  <button onclick="send('cfBrowserLogin')">🌐 用浏览器登录 Cloudflare</button>
+  <button data-op="cfBrowserLogin">🌐 用浏览器登录 Cloudflare</button>
 </div>
-<button id="logoutBtn" onclick="if(confirm('退出账号并清空全部 Cloudflare 凭证残留(含 cloudflared 登录 cert)，回到无账号快速隧道？'))send('logout')" style="margin-top:6px;background:#a33;display:none">退出账号 / 重置为无账号模式</button>
-<button onclick="send('openCf')" style="margin-top:4px;background:var(--vscode-textLink-foreground)">打开 CloudFlare 控制台</button>
+<button id="logoutBtn" data-op="logout" style="margin-top:6px;background:#a33;display:none">退出账号 / 重置为无账号模式</button>
+<button data-op="openCf" style="margin-top:4px;background:var(--vscode-textLink-foreground)">打开 CloudFlare 控制台</button>
 </div>
 
 <!-- 模块3: 导出MD -->
 <div class="section">
 <h3>📄 导出接入文档</h3>
 <div class="row">
-  <button onclick="send('exportCloudMd')">☁️ 云端Agent MD</button>
-  <button onclick="send('exportLocalMd')">🖥️ 本地Agent MD</button>
+  <button data-op="exportCloudMd">☁️ 云端Agent MD</button>
+  <button data-op="exportLocalMd">🖥️ 本地Agent MD</button>
 </div>
 <div class="row">
-  <button onclick="send('openCloudMd')">打开云端MD</button>
-  <button onclick="send('openLocalMd')">打开本地MD</button>
+  <button data-op="openCloudMd">打开云端MD</button>
+  <button data-op="openLocalMd">打开本地MD</button>
 </div>
 </div>
 
 <!-- 能力自测 -->
 <div class="section">
 <h3>⚡ 能力自测</h3>
-<div class="row"><button onclick="send('health')">health</button></div>
-<input id="cmd" placeholder="命令" value="hostname"><button onclick="send('exec',v('cmd'))">exec</button>
+<div class="row"><button data-op="health">health</button></div>
+<input id="cmd" placeholder="命令" value="hostname"><button data-op="exec" data-arg="cmd">exec</button>
 <pre id="out" class="muted">（结果）</pre>
 </div>
 
-<script>
+<script nonce="${nonce}">
 const vscode=acquireVsCodeApi();
 function send(op,arg,extra){vscode.postMessage(Object.assign({op,arg},extra||{}));}
 function v(id){return document.getElementById(id).value;}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 const out=document.getElementById('out');
-document.getElementById('boot').onclick=function(){send('copyBootstrap');};
+// 事件委托 —— 不用内联 onclick(CSP 禁止), 输入框与按钮在任意环境永远可用
+document.addEventListener('click',function(e){
+  var el=e.target.closest('[data-op]'); if(!el) return;
+  var op=el.getAttribute('data-op');
+  if(op==='cfLogin'){send('cfLogin',null,{email:v('cfEmail'),key:v('cfKey')});return;}
+  if(op==='logout'){if(confirm('退出账号并清空全部 Cloudflare 凭证残留(含 cloudflared 登录 cert)，回到无账号快速隧道？'))send('logout');return;}
+  if(op==='exec'){send('exec',v(el.getAttribute('data-arg')||'cmd'));return;}
+  var argId=el.getAttribute('data-arg'); send(op,argId?v(argId):undefined);
+});
 window.addEventListener('message',(e)=>{const m=e.data;
   if(m.type==='state'){const s=m.state||{};const on=!!s.url;
     document.getElementById('dot').className='dot '+(on?'ok':(s.lastErr?'bad':'pending'));
@@ -1874,21 +1967,74 @@ window.addEventListener('message',(e)=>{const m=e.data;
 // ═══════════════════════════════════════════════════════════
 
 let _bridge = null;
+
+// 防御式注册: 任何一项贡献抢注失败(理论上唯一命名空间已不会, 但残留同名插件/重复激活仍兜底)
+// 都不得中断后续注册 —— 确保 webview 的消息处理器总能挂上, 输入框永远可用。
+function safeReg(context, label, fn) {
+  try {
+    const d = fn();
+    if (d && typeof d.dispose === "function") context.subscriptions.push(d);
+    return true;
+  } catch (e) {
+    try { console.error("[daoBridgeHub] 注册失败(" + label + "): " + (e && e.message)); } catch (_) {}
+    return false;
+  }
+}
+
+// 探测遗留 / 重复的同类插件 —— 从源头提示用户卸载, 彻底消除并存冲突。
+function detectLegacyConflict(context) {
+  try {
+    const selfId = (context && context.extension && context.extension.id) ? String(context.extension.id).toLowerCase() : "dao.agent-remote-repair";
+    const all = vscode.extensions.all || [];
+    const dupes = all.filter((ex) => {
+      try {
+        const id = String(ex.id).toLowerCase();
+        if (id === selfId) return false;
+        const c = (ex.packageJSON && ex.packageJSON.contributes) || {};
+        const cmds = (c.commands || []).map((x) => String(x.command || ""));
+        const views = Object.keys(c.views || {});
+        const hitCmd = cmds.some((cm) => /^(daoBridge|daoRemote)\./.test(cm));
+        const hitView = views.some((v) => v === "daoBridge" || v === "daoRemote") ||
+          Object.values(c.views || {}).some((arr) => (arr || []).some((vv) => /^(daoBridgeView|daoRemoteView)$/.test(String(vv.id || ""))));
+        return hitCmd || hitView;
+      } catch (e) { return false; }
+    });
+    if (!dupes.length) return;
+    const ids = dupes.map((d) => d.id);
+    const names = dupes.map((d) => (d.packageJSON && d.packageJSON.displayName) || d.id).join("、");
+    vscode.window.showWarningMessage(
+      "DAO Bridge: 检测到会冲突的遗留插件「" + names + "」。它与本插件抢注同名命令/视图, 可能导致面板无法输入。建议卸载遗留插件。",
+      "卸载遗留插件", "忽略"
+    ).then((pick) => {
+      if (pick !== "卸载遗留插件") return;
+      (async () => {
+        for (const id of ids) {
+          try { await vscode.commands.executeCommand("workbench.extensions.uninstallExtension", id); } catch (e) {}
+        }
+        const again = await vscode.window.showInformationMessage("已卸载遗留插件, 重载窗口以彻底生效?", "重载窗口", "稍后");
+        if (again === "重载窗口") { try { vscode.commands.executeCommand("workbench.action.reloadWindow"); } catch (e) {} }
+      })();
+    });
+  } catch (e) {}
+}
+
 function activate(context) {
   _bridge = new Bridge(context);
   const provider = new BridgeViewProvider(context, _bridge);
-  context.subscriptions.push(vscode.window.registerWebviewViewProvider("daoBridgeView", provider));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.restart", async () => { _bridge.stop(); await _bridge.start(); }));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.copyBootstrap", async () => { await vscode.env.clipboard.writeText(_bridge.bootstrapCmd()); vscode.window.showInformationMessage("DAO Bridge: 已复制被控端一行接入指令"); }));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.openMd", async () => { const d = await vscode.workspace.openTextDocument(_bridge.mdPath()); vscode.window.showTextDocument(d); }));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.exportCloudMd", async () => { await vscode.env.clipboard.writeText(_bridge.generateCloudAgentMd()); vscode.window.showInformationMessage("已复制云端Agent MD"); }));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.exportLocalMd", async () => { await vscode.env.clipboard.writeText(_bridge.generateLocalAgentMd()); vscode.window.showInformationMessage("已复制本地Agent MD"); }));
-  context.subscriptions.push(vscode.commands.registerCommand("daoBridge.logout", async () => {
+  safeReg(context, "view:" + NS + "View", () => vscode.window.registerWebviewViewProvider(NS + "View", provider));
+  safeReg(context, NS + ".restart", () => vscode.commands.registerCommand(NS + ".restart", async () => { _bridge.stop(); await _bridge.start(); }));
+  safeReg(context, NS + ".copyBootstrap", () => vscode.commands.registerCommand(NS + ".copyBootstrap", async () => { await vscode.env.clipboard.writeText(_bridge.bootstrapCmd()); vscode.window.showInformationMessage("DAO Bridge: 已复制被控端一行接入指令"); }));
+  safeReg(context, NS + ".openMd", () => vscode.commands.registerCommand(NS + ".openMd", async () => { const d = await vscode.workspace.openTextDocument(_bridge.mdPath()); vscode.window.showTextDocument(d); }));
+  safeReg(context, NS + ".exportCloudMd", () => vscode.commands.registerCommand(NS + ".exportCloudMd", async () => { await vscode.env.clipboard.writeText(_bridge.generateCloudAgentMd()); vscode.window.showInformationMessage("已复制云端Agent MD"); }));
+  safeReg(context, NS + ".exportLocalMd", () => vscode.commands.registerCommand(NS + ".exportLocalMd", async () => { await vscode.env.clipboard.writeText(_bridge.generateLocalAgentMd()); vscode.window.showInformationMessage("已复制本地Agent MD"); }));
+  safeReg(context, NS + ".logout", () => vscode.commands.registerCommand(NS + ".logout", async () => {
     const r = await _bridge.resetAccount();
     _bridge.stop(); await _bridge.start();
     vscode.window.showInformationMessage("DAO Bridge: " + r.message + " · 已回到无账号快速隧道");
   }));
   context.subscriptions.push({ dispose: () => { try { _bridge.stop(); } catch (e) {} } });
+  // 探测并提示卸载遗留同类插件 —— 从源头消除并存冲突
+  detectLegacyConflict(context);
   // 自动启动 — 插件激活即穿透
   _bridge.start().then((url) => { if (url) vscode.window.setStatusBarMessage("DAO Bridge 已打通: " + url, 8000); });
 }

@@ -1,0 +1,28 @@
+name: CI
+
+# 道法自然：每个 PR / 每次 push 到 main 都在 Windows 上跑全量测试
+# （含真实 .bat 实跑、原生退出码、命名空间共存防冲突），给出可被 auto-merge 依赖的状态检查。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run tests
+        run: npm test

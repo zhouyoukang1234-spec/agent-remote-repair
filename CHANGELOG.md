@@ -2,6 +2,48 @@
 
 本项目遵循语义化版本。日期格式 YYYY-MM-DD。
 
+## [9.4.0] - 2026-06-18
+
+从根本底层完善执行模块 —— 让被控端与中枢本机都能远程跑 `.bat`/`.cmd`/`.exe` 及任意程序，覆盖整台电脑。
+
+### 根因
+此前 exec 把命令原样交给 `Invoke-Expression`（被控端）/ `powershell -Command`（中枢本机）。在 PowerShell 里，一个 `.bat`/`.exe` 文件路径（尤其含空格）会被当成**字符串字面量**而非**可执行**——直接发文件路径只会回显路径、跑不起来，这正是"用 dao bridge 远程跑不了 bat"的根因。命令类型也只有 `shell`/`sysinfo` 两种，没有运行文件、批处理、后台进程的语义。
+
+### 完善（统一 exec 规范化）
+- **新增 `buildExecCommand()`**：把高层 exec 请求规范化为一条健壮的 PowerShell 表达式，中枢本机与被控端**同一条命令**执行；用调用运算符 `&` + 单引号量化，彻底规避 `.bat`/`.exe` 路径与空格问题。
+- **新命令类型**（向后兼容，默认仍 `shell`）：
+  - `run`/`file` — 运行某个文件（`.bat`/`.cmd`/`.exe`/`.ps1`…）+ `args` 数组，`& '<file>' '<arg>'…` 直接执行带空格路径，透传原生退出码。
+  - `cmd`/`bat` — 经 `cmd.exe /d /c` 执行（前置 `chcp 65001` 保证中文 UTF-8 回传），跑批处理/经典 DOS 命令。
+  - `detached`/`spawn` — `Start-Process -PassThru` 后台/分离启动（GUI 或长驻进程，不阻塞轮询循环），立即回 PID；可选 `elevate`(管理员提权)、`show`(显示窗口)。
+  - 裸 `file` 字段（无 `cmd`）自动视为 `run`。
+- **可选 `cwd`**：任意类型都可带工作目录（`Set-Location -LiteralPath`），覆盖整机任意路径。
+- **被控端能力上报**：bootstrap 一行接入脚本 `capabilities` 升级为 `shell,cmd,run,detached`；新表达式经现有 `Invoke-Expression $c.payload.command` 执行，**已部署的被控端无需重装即可获益**（只需中枢升级）。
+- **同步至两处实现**：headless 后端 `core.js`（`dao.js` 用）与 VS Code 插件 `extension.js`（用户实际中枢）一致改造。
+
+### 权限说明
+被控端/中枢以**启动它的用户身份**运行（管理员启动即管理员权限），文件接口 `/api/ls`·`/api/read`·`/api/write` 本就覆盖整机（不限工作区）；本版补齐的是命令**派发语义**，使整机任意可执行/批处理/程序皆可远程驱动。
+
+测试：`npm test` 63/63（31 core + 32 ext），含中枢本机**真实 `.bat` 实跑 + 原生退出码**、`cmd` 类型 UTF-8 回传、`run`/`detached` 表达式构造与端到端路由。
+
+### 工程化（CI / 自动化 PR / 自动发布）
+- **`ci.yml`**：每个 PR / push 到 `main` 在 **windows-latest** 跑 `npm test`（含真实 `.bat` 实跑），给出 `test` 状态检查。
+- **`auto-merge.yml`**：CI 跑完（`workflow_run`）或 PR 开/更/重开/转就绪/定时扫描时，自动合并 **base=main、非草稿、同仓库、无冲突且 CI 通过** 的 PR；合并后显式 dispatch `release.yml`。
+- **`release.yml`**：push 到 `main`（命中代码/版本/CHANGELOG）或手动触发时，先跑测试 → `vsce` 打 VSIX → 按 `package.json` 版本建 GitHub Release（附 VSIX + 取自 `CHANGELOG.md` 的发布说明），同名 tag 已存在则幂等跳过。
+- README 补全：新增「远程运行 `.bat`/`.cmd`/`.exe`」exec 类型表与示例、「持续集成与自动发布」一节；修正命令数（6 个 `daoBridgeHub.*`）与打包命令参数。
+
+## [9.3.0] - 2026-06-18
+
+从根本底层规避一切插件并存冲突。此前合并自本源 dao-bridge 时，沿用了与遗留 `dao.dao-bridge` 插件**完全相同**的贡献标识（活动栏容器 `daoBridge` / 视图 `daoBridgeView` / 命令 `daoBridge.*`）。一旦两插件同时安装，二者抢注同一 `registerWebviewViewProvider("daoBridgeView")` 与同名命令，后注册者抛错中断激活 → webview 的 `onDidReceiveMessage` 没挂上 → 面板按钮点不动、输入框打不了字（"没法写字"）。
+
+### 修复（彻底规避冲突）
+- **唯一命名空间**：全部贡献标识迁至 `daoBridgeHub.*`（活动栏容器 `daoBridgeHub` / 视图 `daoBridgeHubView` / 命令 `daoBridgeHub.*` / 配置 `daoBridgeHub.*`），与遗留 `daoBridge`、`daoRemote` 永不重名——两插件并存也不再抢注同一 id。
+- **配置回退**：`daoCfg()` 优先读新命名空间用户设置，否则回退历史 `daoBridge` / `daoRemote` 的显式设置，最后用新默认值——升级不丢用户既有配置。
+- **防御式注册**：`activate` 内每项 `registerCommand`/`registerWebviewViewProvider` 都经 `safeReg` 包裹，任何残留同名插件/重复激活都不再 brick 掉 webview，消息处理器必然挂上、输入框永远可用。
+- **遗留插件探测**：激活时扫描其它贡献 `daoBridge.*`/`daoRemote.*` 命令或同名视图的插件，弹窗提示并支持一键 `卸载遗留插件` + 重载窗口，从源头消除并存。
+- **Webview 加固**：注入 CSP（`script-src 'nonce-…'`，脚本严格走 nonce 防 XSS）+ 事件委托（移除全部内联 `onclick`，改 `data-op`），确保任意编辑器/锁定环境下输入框与按钮都可用。
+
+测试：`npm test` 48/48（20 core + 28 ext）；VS Code 1.125 扩展宿主实测面板可正常打字、与遗留插件并存无冲突。
+
 ## [9.2.0] - 2026-06-18
 
 回归本源 · 在本源 dao-bridge 插件上演化，而非另起炉灶。以

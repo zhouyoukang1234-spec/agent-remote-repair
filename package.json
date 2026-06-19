@@ -1,7 +1,7 @@
 {
   "name": "agent-remote-repair",
   "displayName": "DAO Bridge · 公网穿透",
-  "version": "9.2.0",
+  "version": "9.4.0",
   "description": "本源 dao-bridge 公网穿透插件 · 演化：公网任意设备一行 PowerShell 汇入单一中枢，按 agent_id 全方位操控。无账号默认快速隧道；可选用户 Cloudflare 命名隧道；内置 cloudflared、代理自适应、Worker 中继回退。道法自然·无为而无不为。",
   "publisher": "dao",
   "engines": {
@@ -39,44 +39,44 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "daoBridge",
+          "id": "daoBridgeHub",
           "title": "DAO Bridge",
           "icon": "media/icon.svg"
         }
       ]
     },
     "views": {
-      "daoBridge": [
+      "daoBridgeHub": [
         {
           "type": "webview",
-          "id": "daoBridgeView",
+          "id": "daoBridgeHubView",
           "name": "公网穿透"
         }
       ]
     },
     "commands": [
-      { "command": "daoBridge.restart", "title": "DAO Bridge: 重启隧道" },
-      { "command": "daoBridge.copyBootstrap", "title": "DAO Bridge: 复制被控端一行接入指令" },
-      { "command": "daoBridge.logout", "title": "DAO Bridge: 退出账号 / 重置为无账号模式" },
-      { "command": "daoBridge.openMd", "title": "DAO Bridge: 打开云端Agent接入文档" },
-      { "command": "daoBridge.exportCloudMd", "title": "DAO Bridge: 导出云端Agent MD" },
-      { "command": "daoBridge.exportLocalMd", "title": "DAO Bridge: 导出本地Agent配置MD" }
+      { "command": "daoBridgeHub.restart", "title": "DAO Bridge: 重启隧道" },
+      { "command": "daoBridgeHub.copyBootstrap", "title": "DAO Bridge: 复制被控端一行接入指令" },
+      { "command": "daoBridgeHub.logout", "title": "DAO Bridge: 退出账号 / 重置为无账号模式" },
+      { "command": "daoBridgeHub.openMd", "title": "DAO Bridge: 打开云端Agent接入文档" },
+      { "command": "daoBridgeHub.exportCloudMd", "title": "DAO Bridge: 导出云端Agent MD" },
+      { "command": "daoBridgeHub.exportLocalMd", "title": "DAO Bridge: 导出本地Agent配置MD" }
     ],
     "configuration": {
       "title": "DAO Bridge",
       "properties": {
-        "daoBridge.cloudflaredPath": { "type": "string", "default": "", "description": "cloudflared 路径（留空自动探测：插件内置 → ~/.dao/bin → PATH → 多镜像下载）" },
-        "daoBridge.cfApiToken": { "type": "string", "default": "", "description": "（可选）Cloudflare API Token" },
-        "daoBridge.tunnelToken": { "type": "string", "default": "", "description": "（可选）命名隧道 Token（cloudflared tunnel run --token）。填入即走用户固定域名通道；留空走零配置快速隧道。打不通会自动回退快速隧道。" },
-        "daoBridge.hostname": { "type": "string", "default": "", "description": "（命名隧道）公网主机名，如 dao.example.com" },
-        "daoBridge.localPort": { "type": "number", "default": 0, "description": "本地服务固定端口（0=随机）" },
-        "daoBridge.accessToken": { "type": "string", "default": "", "description": "（可选）额外访问 Token — 本地 Agent 可用此 Token 接入" },
-        "daoBridge.proxyUrl": { "type": "string", "default": "", "description": "（可选）出站代理，如 http://127.0.0.1:7890。留空时自动探测环境变量与常见本地代理端口。" },
-        "daoBridge.autoProxy": { "type": "boolean", "default": true, "description": "自动探测本机代理（clash/v2ray 常见端口）用于 cloudflared 出站，适配国内网络。" },
-        "daoBridge.relayUrl": { "type": "string", "default": "https://dao-relay-do.zhouyoukang.workers.dev", "description": "默认通道：Worker+DurableObject 出站中继端点。零 Cloudflare 账号、URL 天然稳定（*.workers.dev/relay/<session>）、纯出站适配一切平台。连不上才回退 cloudflared。" },
-        "daoBridge.session": { "type": "string", "default": "", "description": "（中继）会话名 = 公网路径 /relay/<session>。留空用主机名。" },
-        "daoBridge.disableRelay": { "type": "boolean", "default": false, "description": "关闭 Worker 中继默认通道，直接走 cloudflared。" },
-        "daoBridge.confineToWorkspace": { "type": "boolean", "default": false, "description": "将 /api/ls /api/read /api/write 限制在工作区根目录内（沙箱）。默认关闭=整机穿透：云端 Agent 可操作整台电脑，工作区只是其中一部分。" }
+        "daoBridgeHub.cloudflaredPath": { "type": "string", "default": "", "description": "cloudflared 路径（留空自动探测：插件内置 → ~/.dao/bin → PATH → 多镜像下载）" },
+        "daoBridgeHub.cfApiToken": { "type": "string", "default": "", "description": "（可选）Cloudflare API Token" },
+        "daoBridgeHub.tunnelToken": { "type": "string", "default": "", "description": "（可选）命名隧道 Token（cloudflared tunnel run --token）。填入即走用户固定域名通道；留空走零配置快速隧道。打不通会自动回退快速隧道。" },
+        "daoBridgeHub.hostname": { "type": "string", "default": "", "description": "（命名隧道）公网主机名，如 dao.example.com" },
+        "daoBridgeHub.localPort": { "type": "number", "default": 0, "description": "本地服务固定端口（0=随机）" },
+        "daoBridgeHub.accessToken": { "type": "string", "default": "", "description": "（可选）额外访问 Token — 本地 Agent 可用此 Token 接入" },
+        "daoBridgeHub.proxyUrl": { "type": "string", "default": "", "description": "（可选）出站代理，如 http://127.0.0.1:7890。留空时自动探测环境变量与常见本地代理端口。" },
+        "daoBridgeHub.autoProxy": { "type": "boolean", "default": true, "description": "自动探测本机代理（clash/v2ray 常见端口）用于 cloudflared 出站，适配国内网络。" },
+        "daoBridgeHub.relayUrl": { "type": "string", "default": "https://dao-relay-do.zhouyoukang.workers.dev", "description": "默认通道：Worker+DurableObject 出站中继端点。零 Cloudflare 账号、URL 天然稳定（*.workers.dev/relay/<session>）、纯出站适配一切平台。连不上才回退 cloudflared。" },
+        "daoBridgeHub.session": { "type": "string", "default": "", "description": "（中继）会话名 = 公网路径 /relay/<session>。留空用主机名。" },
+        "daoBridgeHub.disableRelay": { "type": "boolean", "default": false, "description": "关闭 Worker 中继默认通道，直接走 cloudflared。" },
+        "daoBridgeHub.confineToWorkspace": { "type": "boolean", "default": false, "description": "将 /api/ls /api/read /api/write 限制在工作区根目录内（沙箱）。默认关闭=整机穿透：云端 Agent 可操作整台电脑，工作区只是其中一部分。" }
       }
     }
   },
@@ -84,7 +84,8 @@
     "start": "node dao.js",
     "start:lan": "node dao.js --lan-only",
     "start:no-tunnel": "node dao.js --no-tunnel",
-    "test": "node _test.js && node _ext_test.js"
+    "test": "node _test.js && node _ext_test.js",
+    "package": "npx --yes @vscode/vsce@latest package --allow-star-activation --no-dependencies"
   },
   "keywords": [
     "remote",

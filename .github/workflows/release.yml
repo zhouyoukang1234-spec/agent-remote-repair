@@ -1,0 +1,83 @@
+name: Release
+
+# 道法自然：往 main 推代码 → 自动按 package.json 版本打 VSIX 并发版到 GitHub Release。
+# 同名 tag 已存在则跳过（幂等）。鉴权用内置 GITHUB_TOKEN，跑在 GitHub 原生 Windows 环境，
+# 先跑全量测试（含真实 .bat 实跑）再发版。auto-merge 合并后会显式 dispatch 本工作流。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "extension.js"
+      - "core.js"
+      - "tunnel.js"
+      - "dao.js"
+      - "package.json"
+      - "CHANGELOG.md"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run tests
+        run: npm test
+
+      - name: Read version
+        id: ver
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag exists
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists — skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build VSIX
+        if: steps.tag.outputs.exists == 'false'
+        shell: bash
+        run: |
+          VSIX="agent-remote-repair-${{ steps.ver.outputs.version }}.vsix"
+          npx --yes @vscode/vsce@latest package --allow-star-activation --no-dependencies -o "$VSIX"
+          ls -lh "$VSIX"
+
+      - name: Extract release notes
+        if: steps.tag.outputs.exists == 'false'
+        shell: bash
+        run: node .github/scripts/changelog-section.js "${{ steps.ver.outputs.version }}" > notes.md || echo "v${{ steps.ver.outputs.version }}" > notes.md
+
+      - name: Create Release
+        if: steps.tag.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          VSIX="agent-remote-repair-${{ steps.ver.outputs.version }}.vsix"
+          gh release create "$TAG" "$VSIX" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA"
+          echo "released $TAG"

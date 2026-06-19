@@ -24,12 +24,16 @@
 **② 自行打包**：
 
 ```bash
-npx @vscode/vsce package          # 产出 .vsix
+npx @vscode/vsce package --allow-star-activation --no-dependencies   # 产出 .vsix
 ```
 
-在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），状态栏显示 `本地:<port> · N 被控端`，命令面板搜 `DAO` 见 8 个命令。被控端短名映射用设置 `daoRemote.aliases`（软编码，无写死值）。
+> 也可由 CI 自动产出：往 `main` 推代码即按 `package.json` 版本自动打包并发版到 [Releases](https://github.com/zhouyoukang1234-spec/agent-remote-repair/releases)（见下文「持续集成与自动发布」）。
 
-点状态栏（或命令 `DAO 远程中枢: 打开中枢状态台`）打开 **「DAO 中枢状态台」**：一窗汇总本机/中枢状态 + **通过 PowerShell 接入的在线设备列表**（每 3s 实时刷新）+ **一行接入指令的复制按钮**（URL 随隧道就绪实时刷新）。每当有设备接入/掉线，`~/DAO_CLOUD_AGENT.md` 云端文档**自动重写**——内含所有在线设备（含中枢）与操控逻辑，复制给云端/本地 Agent 即可让其知悉全部在线设备并直接操控。
+在编辑器里 `Extensions: Install from VSIX…` 选择该 `.vsix` 即可。激活后**中枢=本编辑器**（去中心化：每个安装即自有中枢，默认零外部服务器），左侧活动栏出现 **DAO Bridge** 图标，命令面板搜 `DAO Bridge` 见 6 个命令（`daoBridgeHub.*`）。
+
+> 命名空间统一为 `daoBridgeHub.*`（视图/命令/配置），与遗留 `dao-bridge` / `daoRemote` 插件标识不再重名，从根本上规避两插件并存时抢注同名命令/视图导致面板无法输入的冲突；激活时若探测到遗留同类插件会提示一键卸载。旧的 `daoBridge.*` / `daoRemote.*` 用户设置仍会自动回退读取，升级不丢配置。
+
+点活动栏 **DAO Bridge** 图标打开 **「公网穿透」** 面板：一窗汇总本机/中枢状态 + **通过 PowerShell 接入的在线设备列表**（每 3s 实时刷新）+ **一行接入指令的复制按钮**（URL 随隧道就绪实时刷新）。每当有设备接入/掉线，`~/DAO_CLOUD_AGENT.md` 云端文档**自动重写**——内含所有在线设备（含中枢）与操控逻辑，复制给云端/本地 Agent 即可让其知悉全部在线设备并直接操控。
 
 ## 一行启动（CLI 孪生，可选）
 
@@ -74,15 +78,39 @@ irm <中枢公网URL>/api/bootstrap.ps1 | iex
 | GET  | `/api/health` | - | 存活（免鉴权）|
 | GET  | `/api/info` | - | 中枢信息 |
 | GET  | `/api/agents` | - | 在线被控端列表 |
-| POST | `/api/exec` | `{agent_id,cmd}` | 异步下发，返回 `cmd_id` |
+| POST | `/api/exec` | `{agent_id,type?,cmd?,file?,args?,cwd?,...}` | 异步下发，返回 `cmd_id` |
 | GET  | `/api/result` | `?agent_id=&cmd_id=` | 取异步结果：`completed`+`result` 或 `pending` |
-| POST | `/api/exec-sync` | `{agent_id,cmd,timeout}` | 同步执行并等结果。`agent_id` 空/`self`/`local`/本机名 = **中枢自己这台** |
+| POST | `/api/exec-sync` | `{agent_id,type?,cmd?,file?,args?,cwd?,timeout}` | 同步执行并等结果。`agent_id` 空/`self`/`local`/本机名 = **中枢自己这台** |
 | POST | `/api/broadcast` | `{cmd}` | 广播到所有被控端 |
 | POST | `/api/ls` `/api/read` `/api/write` | `{path,...}` | 中枢机文件操作（全机，修复中枢用）|
 | GET  | `/api/bootstrap.ps1` | - | 被控端一行接入脚本（免鉴权，动态注入当前隧道 URL）|
 
 被控端端点（被控端自己用 per-agent token 自证，不需要 master token）：
 `POST /api/connect` → `GET /api/poll?id=&token=&timeout=` → `POST /api/result` / `POST /api/heartbeat`。
+
+## 远程运行 `.bat`/`.cmd`/`.exe` / 任意程序（覆盖整机）
+
+`/api/exec` 与 `/api/exec-sync` 除了裸 `cmd` 字符串，还支持 `type` 字段把请求规范化为一条健壮的 PowerShell 表达式（中枢本机与被控端**同源**执行）。根因修复：裸命令走 `Invoke-Expression`/`powershell -Command` 时，一个含空格的 `.bat`/`.exe` 路径会被当成**字符串字面量**或被拆词而跑不起来；本扩展用调用运算符 `&` + 单引号量化彻底规避。
+
+| `type` | 行为 | 关键字段 |
+|---|---|---|
+| `shell`（默认）| 原样命令，向后兼容 | `cmd` |
+| `run` / `file` | 运行 `.bat`/`.cmd`/`.exe`/`.ps1` + 参数，含空格路径安全，**透传原生退出码** | `file`, `args[]` |
+| `cmd` / `bat` | 经 `cmd.exe /d /c` + `chcp 65001`（中文 UTF-8）跑批处理/经典 DOS | `cmd` |
+| `detached` / `spawn` | `Start-Process -PassThru` 后台/GUI 启动，立即回 PID | `file`, `args[]`, `elevate?`, `show?` |
+
+任意类型都可带 `cwd`（工作目录，覆盖整机任意路径）。裸 `file`（无 `cmd`）自动视为 `run`。
+
+```jsonc
+// 运行带空格路径的 .bat + 参数，拿原生退出码
+POST /api/exec-sync  {"agent_id":"MY-PC","type":"run","file":"C:/Program Files/tool/build.bat","args":["release"]}
+// 批处理 / 经典 DOS（UTF-8 中文回传）
+POST /api/exec-sync  {"agent_id":"MY-PC","type":"cmd","cmd":"ipconfig /all"}
+// 后台启动 GUI / 长驻进程，立即回 PID（可提权）
+POST /api/exec-sync  {"agent_id":"MY-PC","type":"detached","file":"C:/Windows/notepad.exe","elevate":true}
+```
+
+被控端 `capabilities` 随之上报 `["shell","cmd","run","detached"]`。新表达式经现有 `Invoke-Expression $c.payload.command` 执行，**已部署的被控端无需重装即可获益**（只需中枢升级）。
 
 ## Python SDK（操控端）
 
@@ -107,13 +135,13 @@ print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"whoami"}))   # 中枢本
 | `--lan-only` / `DAO_LAN_ONLY=1` | 仅局域网 |
 | `DAO_TOKEN` | 指定 master token（默认随机并持久化到 `~/.dao-remote/conn.json`）|
 | `DAO_RELAY_URL` | 走 Worker+DurableObject 稳定隧道（`*.workers.dev`），否则默认 cloudflared 透明隧道 |
-| `DAO_ALIASES` | 被控端短名映射（软编码，无写死值），如 `{"laptop":"MY-PC"}`；插件内亦可用设置 `daoRemote.aliases` |
+| `DAO_ALIASES` | 被控端短名映射（软编码，无写死值），如 `{"laptop":"MY-PC"}` |
 
 ## 架构与源码
 
 | 文件 | 角色 |
 |---|---|
-| `extension.js` | **最终产出** — VS Code 类编辑器扩展：激活即中枢=本编辑器，状态栏 + 中枢状态台(Webview，实时刷新设备列表+复制接入指令) + 8 命令，零中心、零配置 |
+| `extension.js` | **最终产出** — VS Code 类编辑器扩展：激活即中枢=本编辑器，状态栏 + 中枢状态台(Webview，实时刷新设备列表+复制接入指令) + 6 命令(`daoBridgeHub.*`)，零中心、零配置 |
 | `core.js` | **本源核心** — Hub（agent 注册表 + 队列/轮询/结果 + agent_id 路由）、统一路由、本机 HTTP server、relay 桥、`/api/bootstrap.ps1` |
 | `tunnel.js` | 出站隧道（cloudflared → ngrok → SSH 自适应，自动下载，零配置）|
 | `dao.js` | 极简 CLI 孪生 — `node dao.js` 起 server + 隧道 + 打印/落盘接入文档（与扩展同源 core）|
@@ -127,6 +155,18 @@ print(api("POST","/api/exec-sync",{"agent_id":"","cmd":"whoami"}))   # 中枢本
 ```bash
 npm test     # 三明治端到端契约：操控端 → 中枢 → 被控端(模拟) 全链路，无需外网
 ```
+
+## 持续集成与自动发布
+
+仓库内置三条 GitHub Actions 工作流（`.github/workflows/`），把「测试 → 合并 → 发版」全自动化，鉴权全用内置 `GITHUB_TOKEN`、跑在 GitHub 原生环境：
+
+| 工作流 | 触发 | 作用 |
+|---|---|---|
+| `ci.yml` | 每个 PR / push 到 `main` | 在 **windows-latest** 跑 `npm test`（含真实 `.bat` 实跑、原生退出码、命名空间共存防冲突），给出 `test` 状态检查 |
+| `auto-merge.yml` | CI 跑完(`workflow_run`)、PR 开/更/重开/转就绪、手动、每 30 分钟定时 | 自动合并 **base=main、非草稿、同仓库、无冲突且 CI 通过** 的 PR；有冲突/失败的留待人工。合并后显式 dispatch `release.yml` |
+| `release.yml` | push 到 `main`（命中代码/版本/CHANGELOG）或手动 | 先跑测试 → `vsce` 打 VSIX → 按 `package.json` 版本建 GitHub Release（附 VSIX + 取自 `CHANGELOG.md` 的发布说明）；同名 tag 已存在则**幂等跳过** |
+
+要发新版：在 PR 里改好代码并**提升 `package.json` 的 `version`**、在 `CHANGELOG.md` 新增对应小节即可——合并到 `main` 后自动产出该版本的 Release。
 
 ## 安全
 

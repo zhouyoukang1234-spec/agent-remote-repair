@@ -15,5 +15,7 @@ _AGENTS.md
 
 # 运行期状态 / 产物
 .dao-remote/**
+bin/**
+cloudflared.exe
 *.vsix
 *.log
