@@ -2,6 +2,18 @@
 
 本项目遵循语义化版本。日期格式 YYYY-MM-DD。
 
+## [9.8.0] - 2026-06-19
+
+去 Worker 中继 + 插件区分。
+
+### 变更
+- **移除 Worker/DurableObject 中继通道**。默认只走 Cloudflare 快速隧道(trycloudflare)；用户配置 tunnelToken/hostname 才走命名隧道。去中心化、不依赖任何人的 Worker。
+- **插件重命名为 "DAO Agent Hub · 远程修复"**，换独立图标(放射齿轮)，与 "DAO Bridge · 公网穿透" 明确区分。
+- 移除 `relayUrl`/`session`/`disableRelay` 配置项(不再需要)。
+- `_publicHealthCheck` 简化为纯 GET(不再处理 relay 信封)。
+- Python SDK/云端接入文档同步简化(移除 RELAY 分支)。
+- 单测从 relay 相关用例更新为纯 cloudflared 用例。
+
 ## [9.7.1] - 2026-06-19
 
 看门狗回环自检修复：经真 cloudflared/relay 公网隧道实测发现并修复。

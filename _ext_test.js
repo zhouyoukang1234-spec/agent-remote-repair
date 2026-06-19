@@ -23,9 +23,9 @@ const commands = {};
 const infoMsgs = [];
 const clipboard = { _v: "" };
 const cfgStore = {
-  relayUrl: "", disableRelay: true, autoProxy: false, confineToWorkspace: false,
+  autoProxy: false, confineToWorkspace: false,
   cloudflaredPath: "", cfApiToken: "", tunnelToken: "", hostname: "", localPort: 0,
-  accessToken: "", proxyUrl: "", session: "",
+  accessToken: "", proxyUrl: "",
 };
 let lastViewProvider = null;
 const vscodeMock = {
@@ -245,7 +245,7 @@ function api(base, method, p, body, token) {
     const wd = new Bridge({ subscriptions: [] });
     // 打桩 start：记录调用、模拟重连后 URL 稳定
     let starts = 0;
-    wd.start = async function () { starts++; this.url = "https://stable.example/relay/host"; return this.url; };
+    wd.start = async function () { starts++; this.url = "https://stable.example.trycloudflare.com"; return this.url; };
     wd._wdThreshold = 2;
     // 自检失败：累计失败，达到阈值触发自愈(start 被调用、失败计数清零)
     wd._publicHealthCheck = async () => false;
@@ -266,24 +266,21 @@ function api(base, method, p, body, token) {
     ok("看门狗：stopWatchdog 停表", wd._wd === null);
   }
 
-  // ── 回环自检 _publicHealthCheck：透明反代直打 + relay 信封 + 错误识别 ──
+  // ── 回环自检 _publicHealthCheck：GET /api/health + 错误识别 ──
   {
     const wd = new Bridge({ subscriptions: [] });
-    wd.srv.token = "wdtoken0123456789abcdef0123456789"; // 真实 token(生产恒非空)
-    // 直连(透明反代) 模式：GET /api/health 200 ok
+    wd.srv.token = "wdtoken0123456789abcdef0123456789";
+    // GET /api/health 200 ok
     const okSrv = http.createServer((req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ status: "ok", service: "dao" })); });
     await new Promise((r) => okSrv.listen(0, r));
     wd.mode = "quick"; wd.url = "http://127.0.0.1:" + okSrv.address().port;
-    ok("回环自检：透明反代 /api/health 200→true", (await wd._publicHealthCheck()) === true);
+    ok("回环自检：/api/health 200→true", (await wd._publicHealthCheck()) === true);
     okSrv.close();
-    // relay 模式：POST 信封，必须带 Authorization: Bearer（relay 边缘强制鉴权，否则 401→误判断线）
-    let sawAuth = "";
-    const errSrv = http.createServer((req, res) => { sawAuth = req.headers["authorization"] || ""; let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "no_agent" })); }); });
+    // {error} 响应→false
+    const errSrv = http.createServer((req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "no_agent" })); });
     await new Promise((r) => errSrv.listen(0, r));
-    wd.mode = "relay"; wd.url = "http://127.0.0.1:" + errSrv.address().port + "/relay/host";
-    const relayRes = await wd._publicHealthCheck();
-    ok("回环自检：relay 信封返回 {error}→false(识破僵尸)", relayRes === false);
-    ok("回环自检：relay 请求带 Authorization: Bearer <token>(防 401 误判)", sawAuth === "Bearer " + wd.srv.token);
+    wd.mode = "quick"; wd.url = "http://127.0.0.1:" + errSrv.address().port;
+    ok("回环自检：{error}响应→false", (await wd._publicHealthCheck()) === false);
     errSrv.close();
     // 无 URL → false
     wd.url = "";
