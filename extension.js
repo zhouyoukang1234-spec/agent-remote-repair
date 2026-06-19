@@ -659,6 +659,14 @@ function sysinfoCmd(platform) {
     "echo; echo '=== MEMORY ==='; (free -h 2>/dev/null || vm_stat 2>/dev/null); " +
     "echo; echo '=== DISK ==='; df -h 2>/dev/null; echo; echo '=== UPTIME ==='; uptime 2>/dev/null";
 }
+// 由被控端登记的 sysinfo 推断其平台：显式 platform 优先；否则按 os_version 关键字判定；
+// 缺省回退 win32（向后兼容老版 PowerShell 被控端；POSIX 被控端必显式带 platform）。
+function platformOf(agent) {
+  const s = (agent && agent.sysinfo) || {};
+  if (s.platform) return String(s.platform);
+  if (/linux|darwin|mac|bsd/i.test(s.os_version || "")) return "linux";
+  return "win32";
+}
 
 // ── 把高层 exec 请求规范化为一条健壮的命令表达式 ──
 // 痛点根因：裸命令走 Invoke-Expression / powershell -Command 时，一个 .bat/.exe
@@ -743,7 +751,7 @@ $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue
 try{ $OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8 }catch{}
 $U='${hubUrl}'
 function Dao-Post($path,$obj){ $b=[Text.Encoding]::UTF8.GetBytes(($obj|ConvertTo-Json -Depth 8 -Compress)); return irm "$U$path" -Method POST -Body $b -ContentType 'application/json; charset=utf-8' -TimeoutSec 35 }
-$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell','cmd','run','detached') }
+$sys=@{ hostname=$env:COMPUTERNAME; username=$env:USERNAME; platform='win32'; os_version=[Environment]::OSVersion.VersionString; ps_version=$PSVersionTable.PSVersion.ToString(); capabilities=@('shell','cmd','run','detached') }
 try { $reg = Dao-Post '/api/connect' @{sysinfo=$sys} } catch { Write-Host "[dao] connect failed: $($_.Exception.Message)" -ForegroundColor Red; return }
 $aid=$reg.agent_id; $tok=$reg.token
 Write-Host "[dao] 已接入中枢 as $aid  (Ctrl+C 退出)" -ForegroundColor Green
@@ -781,6 +789,60 @@ while($true){
     try{ $reg = Dao-Post '/api/connect' @{sysinfo=$sys}; $aid=$reg.agent_id; $tok=$reg.token }catch{ Start-Sleep 3 }
   }
 }
+`;
+}
+
+// Linux/macOS 被控端 · 一行接入：curl -fsSL <hub>/api/bootstrap.sh | sh
+// bash 仅引导，connect→poll→exec→result 循环交给 python3（Linux/macOS 普遍自带），命令经 /bin/sh 执行；
+// 登记 platform=本机平台，中枢据此按 POSIX 规范化下发指令。
+function buildBootstrapSh(hubUrl) {
+  hubUrl = (hubUrl || "").replace(/\/$/, "");
+  return `#!/bin/sh
+# dao Linux/macOS 被控端 · 一行接入 · 道生一，一命接万机
+U="${hubUrl}"
+PY=$(command -v python3 || command -v python)
+if [ -z "$PY" ]; then echo "[dao] 需要 python3 才能接入（Linux/macOS 通常自带）"; exit 1; fi
+exec "$PY" - "$U" <<'DAOEOF'
+import sys, os, json, time, socket, platform, subprocess, urllib.request
+U = sys.argv[1].rstrip('/')
+SYSINFO = r'''echo '=== SYSTEM ==='; uname -a; echo; (lsb_release -a 2>/dev/null || cat /etc/os-release 2>/dev/null); echo; echo '=== CPU ==='; (lscpu 2>/dev/null | head -25 || sysctl -n machdep.cpu.brand_string 2>/dev/null); echo; echo '=== MEMORY ==='; (free -h 2>/dev/null || vm_stat 2>/dev/null); echo; echo '=== DISK ==='; df -h 2>/dev/null; echo; echo '=== UPTIME ==='; uptime 2>/dev/null'''
+SYS = {
+  'hostname': socket.gethostname(),
+  'username': os.environ.get('USER') or os.environ.get('LOGNAME') or 'user',
+  'platform': sys.platform,
+  'os_version': ' '.join(platform.uname()),
+  'capabilities': ['shell', 'run', 'detached', 'sysinfo'],
+}
+def post(path, obj):
+    d = json.dumps(obj).encode('utf-8')
+    req = urllib.request.Request(U + path, data=d, headers={'Content-Type': 'application/json; charset=utf-8'}, method='POST')
+    return json.loads(urllib.request.urlopen(req, timeout=30).read().decode('utf-8'))
+def get(path):
+    return json.loads(urllib.request.urlopen(urllib.request.Request(U + path), timeout=35).read().decode('utf-8'))
+def connect():
+    r = post('/api/connect', {'sysinfo': SYS})
+    return r['agent_id'], r['token']
+aid, tok = connect()
+sys.stderr.write('[dao] 已接入中枢 as %s  (Ctrl+C 退出)\\n' % aid)
+while True:
+    try:
+        poll = post('/api/poll', {'id': aid, 'token': tok, 'timeout': 25})
+        for c in (poll.get('commands') or []):
+            if not c: continue
+            t0 = time.time(); out = ''; err = ''; code = 0
+            try:
+                cmd = SYSINFO if c.get('type') == 'sysinfo' else (c.get('payload') or {}).get('command', '')
+                p = subprocess.run(['/bin/sh', '-c', cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+                out = p.stdout.decode('utf-8', 'replace'); err = p.stderr.decode('utf-8', 'replace'); code = p.returncode
+            except Exception as e:
+                err = str(e); code = 1
+            res = {'stdout': out, 'stderr': err, 'exit_code': code, 'execution_time_ms': int((time.time() - t0) * 1000)}
+            try: post('/api/result', {'agent_id': aid, 'token': tok, 'cmd_id': c['cmd_id'], 'result': res})
+            except Exception: pass
+    except Exception:
+        try: aid, tok = connect()
+        except Exception: time.sleep(3)
+DAOEOF
 `;
 }
 
@@ -953,6 +1015,12 @@ class WorkspaceServer {
           res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Length": sb.length, "Access-Control-Allow-Origin": "*" });
           return res.end(sb);
         }
+        if (pathname === "/api/bootstrap.sh" || pathname === "/bootstrap.sh") {
+          const hubUrl = this._bridgeRef && this._bridgeRef.url ? this._bridgeRef.url : ("http://127.0.0.1:" + this.port);
+          const sb = Buffer.from(buildBootstrapSh(hubUrl), "utf8");
+          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Content-Length": sb.length, "Access-Control-Allow-Origin": "*" });
+          return res.end(sb);
+        }
         let body = "";
         req.on("data", (c) => (body += c));
         req.on("end", async () => {
@@ -1087,7 +1155,10 @@ class WorkspaceServer {
         const r = await runSelf(selfCmd, j.cwd || root, timeoutMs);
         return sync ? { status: 200, body: { status: "completed", agent_id: wsInfo.host, result: r } } : { status: 200, body: r };
       }
-      const command = buildExecCommand(j);
+      // 被控端按其登记平台规范化（Windows→PowerShell；Linux/macOS→/bin/sh），即"两套指令由中枢按目标自动选"。
+      const tgt = this.getAgent(j.agent_id);
+      if (!tgt) return { status: 404, body: { error: "agent not found" } };
+      const command = buildExecCommand(j, platformOf(tgt));
       const qd = this.queueCommand(j.agent_id, "shell", { command });
       if (qd.err) return { status: 404, body: { error: qd.err } };
       if (!sync) return { status: 200, body: { cmd_id: qd.cmdId, agent_id: qd.agent.id, type } };
@@ -1130,10 +1201,9 @@ class WorkspaceServer {
       return { status: 200, body: { ok: true } };
     }
     if (pathname === "/api/broadcast" && method === "POST") {
-      const command = buildExecCommand(j);
       const delivered = [];
-      for (const [id] of this.agentRegistry) {
-        const qd = this.queueCommand(id, "shell", { command });
+      for (const [id, a] of this.agentRegistry) {
+        const qd = this.queueCommand(id, "shell", { command: buildExecCommand(j, platformOf(a)) });
         if (qd.cmdId) delivered.push({ agent_id: id, cmd_id: qd.cmdId });
       }
       return { status: 200, body: { ok: true, delivered } };
@@ -2075,4 +2145,4 @@ function activate(context) {
   _bridge.start().then((url) => { if (url) vscode.window.setStatusBarMessage("DAO Bridge 已打通: " + url, 8000); });
 }
 function deactivate() { try { if (_bridge) _bridge.stop(); } catch (e) {} }
-module.exports = { activate, deactivate, Bridge, WorkspaceServer, BridgeViewProvider, buildBootstrap, runSelf, detectProxy, downloadCloudflared, findCloudflared, isRealCloudflared, probeCloudflared, extractCfTgz, cfAssetName, DaoWsClient, connectRelayWs };
+module.exports = { activate, deactivate, Bridge, WorkspaceServer, BridgeViewProvider, buildBootstrap, buildBootstrapSh, platformOf, buildExecCommand, runSelf, detectProxy, downloadCloudflared, findCloudflared, isRealCloudflared, probeCloudflared, extractCfTgz, cfAssetName, DaoWsClient, connectRelayWs };

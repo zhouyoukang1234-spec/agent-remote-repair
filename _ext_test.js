@@ -85,7 +85,7 @@ function api(base, method, p, body, token) {
 
 (async () => {
   const ext = require("./extension");
-  const { Bridge, WorkspaceServer, BridgeViewProvider, buildBootstrap } = ext;
+  const { Bridge, WorkspaceServer, BridgeViewProvider, buildBootstrap, buildBootstrapSh, platformOf } = ext;
 
   // ── 直接起 WorkspaceServer（不开隧道）──
   const bridge = new Bridge({ subscriptions: [] });
@@ -134,6 +134,32 @@ function api(base, method, p, body, token) {
   ok("exec-sync run 转发 &-表达式到被控端", routedRun.status === 200 && routedRun.json.result.stdout.includes("& 'C:\\tool\\x.bat' 'a'"));
   const routedCmd = await api(BASE, "POST", "/api/exec-sync", { agent_id: "TEST-PC", type: "cmd", cmd: "echo hi", timeout: 10 }, TOKEN);
   ok("exec-sync cmd 转发 cmd.exe/chcp 到被控端", routedCmd.status === 200 && routedCmd.json.result.stdout.includes("cmd.exe /d /c") && routedCmd.json.result.stdout.includes("chcp 65001"));
+
+  // ── Linux/macOS 被控端（platform=linux）：中枢按目标平台下发 POSIX 指令（不是 PowerShell）──
+  const lconn = await api(BASE, "POST", "/api/connect", { sysinfo: { hostname: "LINUX-PC", username: "u", platform: "linux", os_version: "Linux x", capabilities: ["shell", "run", "detached", "sysinfo"] } });
+  const laid = lconn.json.agent_id, latok = lconn.json.token;
+  let lpolling = true;
+  (async function lpoller() {
+    while (lpolling) {
+      const pr = await api(BASE, "POST", "/api/poll", { id: laid, token: latok, timeout: 2 }).catch(() => ({ json: { commands: [] } }));
+      for (const c of (pr.json && pr.json.commands) || []) {
+        await api(BASE, "POST", "/api/result", { agent_id: laid, token: latok, cmd_id: c.cmd_id, result: { stdout: "L:" + (c.payload && c.payload.command), stderr: "", exit_code: 0 } });
+      }
+    }
+  })();
+  const lrun = await api(BASE, "POST", "/api/exec-sync", { agent_id: "LINUX-PC", type: "run", file: "/opt/my app.sh", args: ["a b"], timeout: 10 }, TOKEN);
+  ok("exec-sync 路由 POSIX sh-表达式到 Linux 被控端", lrun.status === 200 && lrun.json.result.stdout.includes("L:sh '/opt/my app.sh' 'a b' 2>&1"));
+  const ldet = await api(BASE, "POST", "/api/exec-sync", { agent_id: "LINUX-PC", type: "detached", cmd: "sleep 1", timeout: 10 }, TOKEN);
+  ok("exec-sync 路由 POSIX nohup 到 Linux 被控端", ldet.json.result.stdout.includes("L:nohup sleep 1 >/dev/null 2>&1"));
+  lpolling = false;
+
+  // platformOf 与 bootstrap.sh
+  ok("platformOf 显式 linux", platformOf({ sysinfo: { platform: "linux" } }) === "linux");
+  ok("platformOf 缺省回退 win32", platformOf({ sysinfo: { os_version: "win-test" } }) === "win32");
+  const bootSh = await api(BASE, "GET", "/api/bootstrap.sh");
+  ok("serves bootstrap.sh (no auth, connect+poll+result)", bootSh.status === 200 && /\/api\/connect/.test(bootSh.raw) && /\/api\/poll/.test(bootSh.raw) && /\/api\/result/.test(bootSh.raw));
+  ok("bootstrap.sh 登记 platform 并用 /bin/sh + POST poll", bootSh.raw.includes("'platform': sys.platform") && bootSh.raw.includes("/bin/sh") && bootSh.raw.includes("post('/api/poll'"));
+  ok("buildBootstrapSh 嵌入 hub url", buildBootstrapSh("https://ex.test").includes("https://ex.test"));
 
   // 找不到的被控端
   const nf = await api(BASE, "POST", "/api/exec-sync", { agent_id: "NO-SUCH", cmd: "x", timeout: 3 }, TOKEN);
