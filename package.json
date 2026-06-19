@@ -1,7 +1,7 @@
 {
   "name": "agent-remote-repair",
   "displayName": "DAO Bridge · 公网穿透",
-  "version": "9.7.0",
+  "version": "9.7.1",
   "description": "本源 dao-bridge 公网穿透插件 · 演化：公网任意设备一行 PowerShell 汇入单一中枢，按 agent_id 全方位操控。无账号默认快速隧道；可选用户 Cloudflare 命名隧道；内置 cloudflared、代理自适应、Worker 中继回退。道法自然·无为而无不为。",
   "publisher": "dao",
   "engines": {

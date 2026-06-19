@@ -269,17 +269,21 @@ function api(base, method, p, body, token) {
   // ── 回环自检 _publicHealthCheck：透明反代直打 + relay 信封 + 错误识别 ──
   {
     const wd = new Bridge({ subscriptions: [] });
+    wd.srv.token = "wdtoken0123456789abcdef0123456789"; // 真实 token(生产恒非空)
     // 直连(透明反代) 模式：GET /api/health 200 ok
     const okSrv = http.createServer((req, res) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ status: "ok", service: "dao" })); });
     await new Promise((r) => okSrv.listen(0, r));
     wd.mode = "quick"; wd.url = "http://127.0.0.1:" + okSrv.address().port;
     ok("回环自检：透明反代 /api/health 200→true", (await wd._publicHealthCheck()) === true);
     okSrv.close();
-    // relay 模式：POST 信封，返回 {error} 视为不可达
-    const errSrv = http.createServer((req, res) => { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "no_agent" })); }); });
+    // relay 模式：POST 信封，必须带 Authorization: Bearer（relay 边缘强制鉴权，否则 401→误判断线）
+    let sawAuth = "";
+    const errSrv = http.createServer((req, res) => { sawAuth = req.headers["authorization"] || ""; let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "no_agent" })); }); });
     await new Promise((r) => errSrv.listen(0, r));
     wd.mode = "relay"; wd.url = "http://127.0.0.1:" + errSrv.address().port + "/relay/host";
-    ok("回环自检：relay 信封返回 {error}→false(识破僵尸)", (await wd._publicHealthCheck()) === false);
+    const relayRes = await wd._publicHealthCheck();
+    ok("回环自检：relay 信封返回 {error}→false(识破僵尸)", relayRes === false);
+    ok("回环自检：relay 请求带 Authorization: Bearer <token>(防 401 误判)", sawAuth === "Bearer " + wd.srv.token);
     errSrv.close();
     // 无 URL → false
     wd.url = "";
